@@ -1,0 +1,101 @@
+# Literature Review
+
+## Introduction
+
+The Literature reviewed was chosen to give insight into the topic at hand. Expected goals (xG) has become one of the most widely used metrics in football analytics since it was introduced by Sam Green in 2012 [@whitmore2023]. It offers a way to judge the quality of shots rather than the outcome of the match only. Expected goals can be used to predict future team and individual player performance better than observed goals, allowing for improved decision making. For example, Liverpool was partially influenced to sign Mo Salah based on his xG values [@vatvani2022]. Due to football's low-scoring nature, there is a high degree of uncertainty around match results, hence the need for additional metrics such as xG, which allow shots to be used as a proxy to evaluate performances [@mead2023; @anzer2021]. It is a useful metric, as it is correlated with a team's success, and match outcomes [@mulazimoglu2024].
+
+This chapter looks at literature with a specific focus on the beginning of football analytics, the standard set of variables used in shot-based xG models, the recent shift towards spatial and derived features such as freeze frames, the modelling and evaluation choices researchers have made along the way, and the data considerations that come with working with event and positional data of this kind. It is important to note that xG is not globally defined, and that there are many xG models with varying results and requirements [@vatvani2022].
+
+## Football Analytics
+
+Football analytics is the use of data to evaluate performance and support decisions in the sport, and it began decades before xG was developed. Its earliest widely documented example is Charles Reep, who in March 1950 began recording a match between Swindon Town and Bristol Rovers by hand, noting the actions in each attacking move [@goaliqai2026]. He went on to analyse thousands of matches, and with Bernard Benjamin studied 578 games between 1953 and 1967. He concluded that most goals came from moves with only a few passes [@xfb2022]. The conclusion was later criticised. Short moves also make up the large majority of all moves, so the figures do not show that direct play is more effective, and Reep's work is now mostly remembered as a warning that interpreting data matters as much as collecting it [@goaliqai2026].
+
+Over the following decades, the infrastructure for modern analytics developed. Video made it possible to replay and review matches, and from 1990s providers such as Opta began supplying structured event data on passes, shots, tackles and other actions, while systems such as Prozone tracked player movement [@goaliqai2026]. This allowed analysts to study large samples with consistent definitions rather than isolated matches. Interest in using evidence to find value that conventional judgement overlooked then grew, popularised by the Moneyball story, Michael Lewis's account of how a low budget baseball team used statistics to compete with richer rivals. Clubs then began extending data into recruitment, tactical preparation and decision making [@goaliqai2026].
+
+Expected goals emerged from this environment in the early 2010s [@whitmore2023]. Because football is a low scoring game, results are strongly influenced by chance and the scoreline is a noisy measure of performance [@mead2023]. xG addresses this by giving each shot a probability of scoring based on characteristics such as location and angle, so that analysts can separate the quality of the chances from whether they were converted [@goaliqai2026]. The idea is not unique to football, as Macdonald [-@macdonald2012] developed an expected goals model for the NHL. xG is associated with team success and match outcomes [@mulazimoglu2024] and has since been used in player and team evaluation [@scholtes2024; @malikov2024].
+
+Analytics has since moved beyond shots. Possession value models estimate how individual actions change the likelihood of scoring, and tracking data records where all players are positioned over time (GoalIQAI, 2-26). Researchers have therefore begun to add positional context to xG [@anzer2021]. Freeze frame data brings a version of this context to event data by recording player positions at the moment of the shot [@hudl2021]. This is addressed in this study and the next section reviews the standard xG features before turning to these spatial extensions.
+
+## Standard xG modelling
+
+### Core variables
+
+Almost every published xG model, regardless of the algorithm behind it, is built around a small set of shot-level predictors. Distance to the goal and angle of the shot are consistently found to be the two dominant predictors, with several authors noting that the two variables should ideally be considered together rather than in isolation [@rathke2017]. Other than these, the body part used to take the shot (head, strong foot, weak foot) and the type of play preceding the shot, such as open play, free kick or corner, are treated as standard inputs across literature [@anzer2021]. Robberechts and Davis [-@robberechts2020] formalise this into a 'basic' feature set of five variables: shot x and y location, distance to goal, angle to goal, and body part, and use it as a simple baseline against which other feature sets can be compared.
+
+Penalties are usually treated as a special case, since their outcome is a lot more predictable than open-play shots. Some researchers assign them a fixed value that reflects their historical conversion rate rather than modelling them at all. For example, Opta has given them a constant value of 0.79 xG. [@whitmore2023].
+
+### Known limitations of the standard approach
+
+The main weakness of models built on this basic feature set is that they describe the shot itself but do not say much about the situation the shot was taken in.
+
+## Enhanced and spatial xG approaches
+
+### StatsBomb's proprietary enhanced model
+
+StatsBomb was one of the first data providers to move beyond pure event data by capturing a 'freeze frame' of player positions at the moment of every shot, including the location of the goalkeeper and outfield defenders, from 2018 when they launched their data offering [@hudl2021]. Their original freeze frame features included the number of blockers between the person taking the shot and the goal, the proportion of the goal face that was blocked, and a binary open goal indicator. In a 2022 update, StatsBomb moved away from the non-continuous features and began representing each defender as a two-dimensional Gaussian bell-shaped surface rather than fixed-radius circles, which produced a smoother and more realistic relationship between small changes in players position and the resulting change in goal probability [@vatvani2022].
+
+### Freeze-frame / tracking-based innovations
+
+Using freeze-frame spatial data, many new features can be engineered. StatsBomb's proprietary model, for example, adds multiple spatial features to the baseline model. These features include the number of blockers between the shot taker and the goal posts, the proportion of the goal that is blocked by defenders, and whether there is any player between the goal and the shooter, a binary "open goal" feature [@vatvani2022].
+
+### Interpretable spatial models 
+
+The interpretability of the model results depends on the model choice. This has been noted in similar performance metrics by Decroos et al. [-@decroos2019], such as the shot and possession metric, valuing actions by estimating probabilities (or VAEP). In this context, it was noted that a simpler model, in this case a generalised additive model, performed nearly as well as a more complicated gradient boosted model, but was far more interpretable [@decroos2020].
+
+## Penalty shots as a separate case
+
+Penalties are treated as a special case throughout this literature because their outcome is a lot more predictable than a typical open play shot and including them into the xG model tends to make it look more accurate than it is at estimating shot quality. Several studies therefore exclude penalties, and often direct freekicks, from their modelling data entirely [@anzer2021; @robberechts2020], while some data providers instead assign penalties a constant value reflecting their long-run historical conversion rate rather than modelling them with the same features used for open play. This project follows the same convention by excluding penalties from the modelling sample, since they are not meaningfully affected by the defender and goalkeeper positioning features, which are the focus of this work.
+
+## Other Features and Approaches
+
+### Team and Player Ability
+
+There are many other potential features that can be added to an xG model. The first being that of a specific team or individual player ability. The probability of a shot resulting in a goal may be different for identical shots taken by teams or players of different abilities.
+
+Proxy features can be created to represent ability, as seen in Mead, O'Hare & McMenemy [-@mead2023]. The first proxy feature is match attendance (as better teams draw more viewers on average). Another way to rate a team's ability is to sum the individual player transfer value of the whole team. In a similar fashion, another feature is a club's average transfer spend. A team's form can also be taken into account by looking at a team's recent match results.
+
+For defining player ability, Mead, O'Hare & McMenemy [-@mead2023] use features such as PlayeRank, which is a performance metric that measures how well players played in a match. This score is useful for measuring the performance of goalkeepers, defenders, and midfielders, as it measures general performance, not just shots. Other proxy features include a player's value on the transfer market, similar to the measure of team ability mentioned previously.
+
+Another feature that helps distinguish between players of different shooting ability is the player position column. This is done by dividing the field into six vertical columns and assigning each player to one depending on how advanced they usually are on the field [@bandara2024]. In addition to this, an advancement factor feature can be created, which looks at the difference between the column the event took place in and the shooters player position column [@bandara2024]. This lets us account for a shot in the box taken by a defender far out of position as opposed to a striker.
+
+### Bayes-xG Models
+
+Another method for accounting for individual player ability, is using a Bayesian hierarchical approach. A prior belief can be established, but then the more shots or observations we have from a specific player, the more the posterior distribution of that player may differ from the prior [@scholtes2024]. This method can also be applied to distinguish between the xG of players from various general positions, such as strikers as opposed to defenders, or for specific positions, such as wingers, or centre-backs for example.
+
+### Psychological Effects
+
+Other potential features include psychological effects. Mead, O'Hare & McMenemy [-@mead2023] list several such features, including whether or not a team has the home advantage, the importance of a match (for example, a final, or when playing against a direct rival), the time of a match when a shot was taken, and goal differential, which shows the difference in the scoreline of the shooters team and their opponent. Each of these factors may have psychological effects on players as they take shots, due to the pressure they may be under.
+
+### Off the ball Movement
+
+A probabilistic approach can be used to quantify off the ball scoring opportunities [@mead2023]. This feature can account for clever off the ball movement of supporting teammates that may create better scoring opportunities for the player on the ball.
+
+### Player Adjusted xG
+
+In the xG models discussed so far, Tureen and Olthof [-@tureen2022] note that observations are not necessarily all independent, which they are assumed to be. By taking each shot as its own observation, shots taken by the same player may be correlated with each other. This correlation is not accounted for in logistic regression and tree-based models. A Player Adjusted xG can be used to account for this, by using a hierarchical Generalised Linear Mixed Models [@tureen2022]. In this model, all shots taken by the same player are nested under that player in the hierarchical structure.
+
+### Information After the Shot
+
+A proposed adjustment to xG models is using a dual prediction model that considers both expected and actual goals (aG) per game, which enhances the accuracy of predictive models [@malikov2024]. This approach allows you to take advantage of the comparison between xG and aG.
+
+Similarly, you can combine xG which takes information prior to the shot into account (Pre-xG) and information directly after the shot is taken, or post-shot xG (PSxG). PSxG adds extra information, such as a shot's direction and power, but does not account for the goalkeeper's position [@belloso2026].
+
+###  Coaches and Tactics
+
+There are other features relating to factors outside the match itself. These include the coach in charge of the team, how long the coach has been in his current position at the club, and what tactics they were using at the time a shot is taken [@malikov2026].
+
+### Player Fatigue and Time Played
+
+Factors related to a player's energy levels and fatigue can be included as features. This can be done by accounting for how long the player has been on the field at the time they take a shot, and by looking at their overall game time over a recent period [@malone2025].
+
+## Limitations of xG
+
+Expected goal models only provide an xG value to shots that occur, and do not account for "big chances" that do not result in a shot [@anzer2021]. Other models that account for these types of situations include expected threat models (xT), which provide expected possession values to all situations, not just shots. Another example are VAEP models, which also take additional information into account from events such as passes, dribbles and tackles, rather than just shots [@decroos2020].
+
+There is no one size fits all model in xG. It is important to build an xG model that is specifically suited to the needs of the one using it [@bajons2025].
+
+## Summary
+
+Expected goals (xG) assesses the quality of shots rather than match outcomes alone, and it has become a widely used metric because football's low scoring makes results highly uncertain [@mead2023; @anzer2021]. Standard xG models are built on a small set of shot-level predictors, namely distance, angle, body part and assist type [@robberechts2020], but these describe the shot itself rather than the situation in which the shot was taken. Freeze-frame data addresses this by capturing the positions of defenders and the goalkeeper at the moment of the shot, which allows features such as the number of blockers and the proportion of the goal blocked to be engineered [@vatvani2022]. A wide range of features have also been explored, including team and player ability, psychological effects, fatigue, and tactical context, as well as Bayesian and hierarchical approaches that account for player-level variation [@scholtes2024; @tureen2022].
+
+The literature highlights several data considerations, including class imbalance, the synchronisation of positional data, and the exclusion on penalties, a convention we have followed in this study.

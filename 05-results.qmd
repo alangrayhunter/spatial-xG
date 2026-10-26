@@ -1,0 +1,814 @@
+# Results
+
+```{r}
+#| include: false
+source(here::here("_common.R"))
+tm <- test_metrics()
+order_bss <- tm |> arrange(bss) |> pull(name) # best at the top of the plots
+```
+
+## Model Performance Comparison
+
+@tbl-metrics-test below looks at the performance of our 10 models and compares them with StatsBomb's xG model. The performance metrics are separated into probability and ranking metrics, and classification metrics. Then we will compare the performance of both our model algorithms, XGBoost and Logistic Regression.
+
+### Probability and ranking metrics
+
+After running our models, the results can be summarised as follows. Each of our five feature sets were fitted with both logistic regression and XGBoost, giving us a total of 10 models. The performance of each model was evaluated with a variety of performance metrics as discussed in the methodology. In addition to our 10 models, the StatsBomb xG model is also evaluated using the xG scores given in the StatsBomb data. The StatsBomb xG serves as a benchmark for model performance, as it is an industry standard model. The results of all 11 models using the test data set is summarised in @tbl-metrics-test below:
+
+```{r}
+#| label: tbl-metrics-test
+#| tbl-cap: "Test set performance"
+out("metrics") |>
+  filter(set == "test") |>
+  mutate(Model = if_else(model == "statsbomb", "StatsBomb", tier_full[tier]),
+         Model = factor(Model, levels = c(tier_full, "StatsBomb")),
+         Algorithm = algo_short[model]) |>
+  arrange(Model, Algorithm) |>
+  select(Model, Algorithm, AUROC = auc, `PR-AUC` = pr_auc, Brier = brier, `Brier skill score` = bss, `Log loss` = log_loss) |>
+  mutate(Model = blank_repeats(as.character(Model))) |>
+  kable_tbl(digits = 4, lines_by = "Model")
+```
+
+From @tbl-metrics-test above, we see that the best model is M5 using XGBoost, with a Brier value of 0.0728, AUROC 0.825 and a Brier skill score of 19.9%. In comparison, StatsBomb has a Brier of 0.0736, an AUROC of 0.820, and a Brier skill score of 19.1%. In each case, performance improves as more feature groups are added.
+
+@tbl-metrics-train-test below shows the performance of each model when applied to the training set compared to test set. This will show which models do worse on the test set than on the training set. When a model performs much better on training, it indicates that the model may have overfit to the data.
+
+```{r}
+#| label: tbl-metrics-train-test
+#| tbl-cap: "Train and test set performance"
+out("metrics") |>
+  filter(TRUE) |>
+  mutate(Model = if_else(model == "statsbomb", "StatsBomb", tier_full[tier]),
+         Model = factor(Model, levels = c(tier_full, "StatsBomb")),
+         Algorithm = algo_short[model]) |>
+  arrange(Model, Algorithm) |>
+  select(set, Model, Algorithm, auc, brier, log_loss) |>
+  pivot_wider(names_from = set, values_from = c(auc, brier, log_loss)) |>
+  select(Model, Algorithm, `AUROC train` = auc_train, `AUROC test` = auc_test, `Brier train` = brier_train,
+         `Brier test` = brier_test, `Log loss train` = log_loss_train, `Log loss test` = log_loss_test) |>
+  mutate(Model = blank_repeats(as.character(Model))) |>
+  kable_tbl(digits = 4, lines_by = "Model")
+```
+
+@tbl-metrics-train-test above shows that all the logistic regression models have roughly the same performance metrics on both the training and test set. For example, M5's logistic model had a training Brier of 0.0741 but a test Brier of 0.0731. For the XGBoost models, the gap between test and training grows as more feature sets are added to the model with training and test Brier scores of 0.0679 and 0.0728 respectively. M5, with the most features had the biggest gap. Despite this, it still has the best performance on the test set of all 11 models.
+
+@fig-performance and @fig-bss show visually how each model performed on the test set for easier performance comparison:
+
+```{r}
+#| label: fig-performance
+#| fig-cap: "Test set AUROC, PR-AUC and Brier score"
+#| fig-height: 5.5
+tm |>
+  select(name, m, type, auc, pr_auc, brier) |>
+  pivot_longer(c(auc, pr_auc, brier), names_to = "metric") |>
+  mutate(metric = factor(metric, levels = c("auc", "pr_auc", "brier"),
+                         labels = c("AUROC\n(higher is better)", "PR-AUC\n(higher is better)", "Brier score\n(lower is better)"))) |>
+  ggplot(aes(value, name, colour = m, shape = type)) +
+  geom_point(size = 3.5) +
+  facet_wrap(~ metric, scales = "free_x") +
+  scale_y_discrete(limits = order_bss) +
+  scale_x_continuous(n.breaks = 3) +
+  scale_colour_manual(values = m_colours) +
+  scale_shape_manual(values = type_shapes) +
+  labs(x = NULL, y = NULL, colour = NULL, shape = NULL) +
+  theme(legend.box = "vertical", legend.margin = margin(0, 0, 0, 0))
+```
+
+```{r}
+#| label: fig-bss
+#| fig-cap: "Brier skill score on the test set: how much lower each model's Brier score is than giving every shot the training goal rate (higher is better)"
+#| fig-scap: "Brier skill score on the test set"
+tm |>
+  ggplot(aes(x = bss, y = name, fill = m == "StatsBomb")) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = scales::percent(bss, accuracy = 0.1)), hjust = -0.1, size = 4) +
+  scale_y_discrete(limits = order_bss) +
+  scale_x_continuous(labels = scales::percent, expand = expansion(mult = c(0, 0.2))) +
+  scale_fill_manual(values = c(`TRUE` = "#D55E00", `FALSE` = "steelblue"), guide = "none") +
+  labs(x = "Brier skill score (higher is better)", y = NULL)
+```
+
+@fig-auroc-brier below shows the two most popular metrics. It can be read as the further up and to the right, the better the models performance. In this case, M5 using XGBoost has the best performance of all 11 models in both Brier and AUROC.
+
+```{r}
+#| label: fig-auroc-brier
+#| fig-cap: "Test set AUROC against Brier score. Top right is best, dashed line = trend across our models"
+#| fig-scap: "Test set AUROC against Brier score"
+#| fig-height: 5.5
+n_features <- lengths(out("feature_sets"))
+d <- tm |> mutate(features = n_features[tier])
+ggplot(d, aes(auc, brier)) +
+  geom_smooth(data = filter(d, m != "StatsBomb"), method = "lm", se = FALSE,
+              linetype = "dashed", colour = "grey60", linewidth = 0.6) +
+  geom_point(data = filter(d, m != "StatsBomb"), aes(colour = type, size = features)) +
+  geom_point(data = filter(d, m == "StatsBomb"), colour = "#D55E00", shape = 18, size = 5) +
+  geom_text_repel(aes(label = name), size = 4, seed = 1, box.padding = 0.7, min.segment.length = 0) +
+  scale_y_reverse() + # lower Brier is better, so it goes at the top
+  scale_colour_manual(values = c(`Logistic regression (LR)` = "grey45", `XGBoost (XGB)` = "steelblue")) +
+  scale_size_continuous(range = c(2, 6), breaks = c(5, 12, 27, 34, 54)) +
+  labs(x = "AUROC (higher is better)", y = "Brier score (lower is better)",
+       colour = NULL, size = "Number of features") +
+  guides(colour = guide_legend(override.aes = list(size = 4), order = 2), size = guide_legend(order = 1)) +
+  theme(legend.box = "vertical", legend.margin = margin(0, 0, 0, 0))
+```
+
+@fig-roc below shows the AUROC curve for our five XGBoost models and the StatsBomb xG model.
+
+```{r}
+#| label: fig-roc
+#| fig-cap: "ROC curves, test set. Dashed line = random guessing"
+#| fig-scap: "ROC curves, test set"
+#| fig-height: 5.5
+curve_models <- c("M1 XGB", "M2 XGB", "M4 XGB", "M5 XGB", "StatsBomb")
+curve_colours <- c("grey60", "#9ecae1", "#4292c6", "#08519c", "#D55E00")
+curves <- dat("predictions") |>
+  filter(set == "test", !is.na(pred)) |>
+  mutate(name = short_name(model, tier)) |>
+  filter(name %in% curve_models) |>
+  group_by(name) |>
+  arrange(desc(pred), .by_group = TRUE) |>
+  mutate(tpr = cumsum(goal) / sum(goal), fpr = cumsum(1 - goal) / sum(1 - goal),
+         precision = cumsum(goal) / row_number()) |>
+  ungroup() |>
+  left_join(tm |> select(name, auc, pr_auc), by = "name") |>
+  mutate(name = factor(name, levels = curve_models))
+
+curves |>
+  mutate(label = fct_reorder(sprintf("%s (%.3f)", name, auc), as.numeric(name))) |>
+  ggplot(aes(x = fpr, y = tpr, colour = label)) +
+  geom_abline(linetype = "dashed", colour = "grey60") +
+  geom_line(linewidth = 0.7) +
+  scale_colour_manual(values = curve_colours) +
+  coord_equal() +
+  theme(legend.position = c(0.72, 0.25),
+        legend.background = element_rect(fill = "white", colour = NA)) +
+  labs(x = "False positive rate (1 - specificity)", y = "True positive rate (recall)", colour = "AUROC")
+```
+
+The curves in @fig-roc are mostly overlapping, with the exception being that the simplest model using XGBoost and only the literature event features lie noticeably below all other models. Each curve is smooth with no clear optimal cut off value. The highest area covered is by M5 with a score of 0.825m while M1 only covers 0.792. The biggest increase is between model 1 and model 2, where adding the spatial features increases the AUROC score by 0.025. Both M4 and M5 are above StatsBomb xG's model. All models lie well above the dashed line that would be achieved when only randomly guessing if a shot will result in a goal or not.
+
+Below we have the PR-AUC plot for our XGBoost and Statstomb's models which show the precision-recall curves at different cut-off levels if we were to use the xG value for a shot to either predict the outcome as a goal or no goal.
+
+```{r}
+#| label: fig-pr
+#| fig-cap: "Precision-recall curves, test set. Dashed line = the goal rate (a model that knows nothing)"
+#| fig-scap: "Precision-recall curves, test set"
+#| fig-height: 5
+goal_rate_test <- mean(curves$goal[curves$name == "StatsBomb"])
+curves |>
+  mutate(label = fct_reorder(sprintf("%s (%.3f)", name, pr_auc), as.numeric(name))) |>
+  ggplot(aes(x = tpr, y = precision, colour = label)) +
+  geom_hline(yintercept = goal_rate_test, linetype = "dashed", colour = "grey60") +
+  geom_line(linewidth = 0.7) +
+  scale_colour_manual(values = curve_colours) +
+  coord_cartesian(ylim = c(0, 1)) +
+  theme(legend.position = c(0.78, 0.75),
+        legend.background = element_rect(fill = "white", colour = NA)) +
+  labs(x = "Recall", y = "Precision", colour = "PR-AUC")
+```
+
+@fig-pr above again has the curves of all models overlapping, except for the Baseline model M1 which falls notably below the others. All the curves are noisy on the left side, as they noticeably zig zag due to there being less shots with high xG values. There is a clear trend of recall increasing as precision decreases. All curves are well above the dashed line, which is the goal rate of about 0.1, which is how a model would perform if it knew nothing. The biggest gap is between M1 and M2 with an increase in PR-AUC of 0.058, with small gains thereafter. M4 and M5 are both above StatsBomb's score of 0.42.
+
+### Classification metrics
+
+@tbl-class-metrics below summarises the classification performance metrics for all models.
+
+```{r}
+#| label: tbl-class-metrics
+#| tbl-cap: "Test set classification metrics at two cut-offs: the training goal rate (0.103) and 0.5"
+out("class_metrics") |>
+  mutate(Model = if_else(model == "statsbomb", "StatsBomb", tier_short[tier]),
+         Model = factor(Model, levels = c(tier_short, "StatsBomb")),
+         Algorithm = if_else(model == "statsbomb", "", algo_short[model]),
+         `Cut-off` = if_else(cutoff == 0.5, "Cut-off = 0.5", "Cut-off = training goal rate (0.103)")) |>
+  arrange(desc(`Cut-off`), Model, Algorithm) |>
+  mutate(Model = as.character(Model)) |>
+  group_by(`Cut-off`) |>
+  mutate(Model = blank_repeats(Model)) |>
+  ungroup() |>
+  mutate(`Cut-off` = blank_repeats(`Cut-off`)) |>
+  select(`Cut-off`, Model, Algorithm, Accuracy = accuracy, `Balanced accuracy` = balanced_accuracy,
+         Recall = recall, Specificity = specificity, Precision = precision, F1 = f1) |>
+  kable_tbl(digits = 3, group = "Cut-off", lines_by = "Model")
+```
+
+In addition to @tbl-class-metrics, @fig-class-metrics to @fig-f1-ba-half show a visualisation to more easily compare model performance.
+
+```{r}
+#| label: fig-class-metrics
+#| fig-cap: "Test set classification metrics for every model at both cut-offs"
+#| fig-height: 7
+out("class_metrics") |>
+  mutate(name = factor(short_name(model, tier), levels = rev(c(paste(rep(tier_short, each = 2), c("LR", "XGB")), "StatsBomb"))),
+         cutoff = if_else(cutoff == 0.5, "Cut-off 0.5", "Cut-off 0.103 (goal rate)")) |>
+  select(name, cutoff, Recall = recall, Specificity = specificity, `Balanced accuracy` = balanced_accuracy, F1 = f1) |>
+  pivot_longer(c(Recall, Specificity, `Balanced accuracy`, F1), names_to = "metric") |>
+  mutate(metric = factor(metric, levels = c("Balanced accuracy", "F1", "Recall", "Specificity"))) |>
+  ggplot(aes(x = value, y = name, colour = cutoff)) +
+  geom_point(size = 2.5) +
+  facet_wrap(~ metric, ncol = 2) +
+  scale_x_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
+  scale_colour_manual(values = c(`Cut-off 0.5` = "grey50", `Cut-off 0.103 (goal rate)` = "steelblue")) +
+  labs(x = NULL, y = NULL, colour = NULL)
+```
+
+```{r}
+#| label: fig-recall-spec-goal
+#| fig-cap: "Recall against specificity, cut-off = training goal rate (0.103)"
+#| fig-height: 5
+cm <- out("class_metrics") |>
+  mutate(m = if_else(model == "statsbomb", "StatsBomb", tier_short[tier]),
+         name = short_name(model, tier),
+         type = case_when(model == "statsbomb" ~ "StatsBomb", model == "xgboost" ~ "XGBoost (XGB)",
+                          TRUE ~ "Logistic regression (LR)"))
+class_scatter <- function(which_cut, x, y, x_lab, y_lab, ba_lines = FALSE) {
+  d <- cm |> filter(if (which_cut == "goal") cutoff != 0.5 else cutoff == 0.5)
+  p <- ggplot(d, aes(.data[[x]], .data[[y]]))
+  if (ba_lines) {
+    # equal balanced accuracy: recall + specificity = constant
+    p <- p + geom_abline(intercept = seq(1, 2, by = 0.01), slope = -1, linetype = "dashed", colour = "grey85")
+  }
+  p +
+    geom_point(aes(colour = m, shape = type), size = 3.5) +
+    geom_text_repel(aes(label = name), size = 3.8, seed = 1, box.padding = 0.6, min.segment.length = 0) +
+    coord_cartesian(xlim = range(d[[x]]) + c(-1, 1) * diff(range(d[[x]])) * 0.08,
+                    ylim = range(d[[y]]) + c(-1, 1) * diff(range(d[[y]])) * 0.08) +
+    scale_colour_manual(values = m_colours, guide = "none") +
+    scale_shape_manual(values = type_shapes) +
+    labs(x = x_lab, y = y_lab, shape = NULL)
+}
+
+class_scatter("goal", "specificity", "recall", "Specificity", "Recall", ba_lines = TRUE) +
+  labs(caption = "Cut-off = training goal rate (0.103). Dashed lines: equal balanced accuracy. Top right is better.")
+```
+
+```{r}
+#| label: fig-recall-spec-half
+#| fig-cap: "Recall against specificity, cut-off = 0.5"
+#| fig-height: 5
+class_scatter("0.5", "specificity", "recall", "Specificity", "Recall", ba_lines = TRUE) +
+  labs(caption = "Cut-off = 0.5. Dashed lines: equal balanced accuracy. Top right is better.")
+```
+
+```{r}
+#| label: fig-f1-ba-goal
+#| fig-cap: "F1 against balanced accuracy, cut-off = training goal rate (0.103)"
+#| fig-height: 5
+class_scatter("goal", "balanced_accuracy", "f1", "Balanced accuracy", "F1") +
+  labs(caption = "Cut-off = training goal rate (0.103). Top right is better.")
+```
+
+```{r}
+#| label: fig-f1-ba-half
+#| fig-cap: "F1 against balanced accuracy, cut-off = 0.5"
+#| fig-height: 5
+class_scatter("0.5", "balanced_accuracy", "f1", "Balanced accuracy", "F1") +
+  labs(caption = "Cut-off = 0.5. Top right is better.")
+```
+
+From the figures and table above, we can see that the cut-off value matters more than the choice of model. All 11 models differ less from each other within a cut-off than they do between cut-off choices. At the goal rate cut-off of 0.103, M5 using XGB has the highest recall of 0.735, the second highest specificity of 0.766, and the highest balanced accuracy of 0.751. At a cut-off of 0.5, these change to 0.16, 0.99 and 0.575 respectively. All values are noticeably lower at the goal rate cut-off for recall, balanced accuracy, and F1 scores, and are higher for specificity. All the spatial models, M2, M4 and M5, have better balanced accuracy than the baseline models, M1 and M3. The simplest model M1 using logistic regression has balanced accuracy. The StatsBomb model has the highest specificity of 0.786, but it's recall is the 2^nd^ lowest at 0.695, with the lowest being M1 using LR at 0.686. StatsBomb's balanced accuracy of 0.74 is equal to that of M2 XGB. The figure showing balanced accuracy vs F1 shows StatsBomb has a relatively lower balanced accuracy than F1 score when compared to the trend of our models.
+
+At the 0.5 cut-off, the recall is low for every model, with the smallest being M1 XGB at 0.093 and the biggest being M5 LR at 0.175. Specificity is very high for each model, all above M5 LR at 0.988. The accuracies are roughly the same, just above 0.9 for all models. M1 XGB has the lowest balanced accuracy and F1 score of 0.544 and 0.163 respectively, while M5 LR has the highest scores of 0.581 and 0.273 respectively. The spatial models have higher recall, balanced accuracy and F1 scores than baseline models. The balanced accuracy of M5 is higher for the LR model at 0.581 than the XGB model at 0.575. The StatsBomb model falls in the middle of the other models in balanced accuracy of 0.568, F1 of 0.237, and a recall of 0.144.
+
+### XGBoost and Logistic Regression
+
+@tbl-model-type below compares the Brier scores of each Logistic Regression model with the corresponding XGB model.
+
+```{r}
+#| label: tbl-model-type
+#| tbl-cap: "XGBoost against logistic regression, Wilcoxon signed-rank test on squared errors"
+out("model_type_tests") |>
+  mutate(Model = factor(tier_full[tier_of(new_model)], levels = tier_full)) |>
+  arrange(Model) |>
+  transmute(Model, `Brier LR` = fmt_num(brier_old), `Brier XGB` = fmt_num(brier_new),
+            `Improvement (%)` = sprintf("%.1f", 100 * improvement / brier_old), `p-value` = fmt_p(p_value)) |>
+  kable_tbl()
+```
+
+@tbl-model-type above shows that M1 has practically no difference in Brier score between LR and XGB, with both having a rounded score of 0.0776. This is confirmed by the large p-value of the Wilcoxon test. The other 4 models all show a small reduction in Brier scores, with M2 and M4 having percentage decreases of 1.3 and 0.8 respectively, and are statistically significant at a 5% significance level with p-values below 0.001. The most complex model, M5, which has an improvement of 0.4% when using XGB over LR, does not have the same statistically significant improvement.
+
+@fig-calibration below shows calibration plots for all 11 models to see how well calibrated the models are at different predicted xG levels.
+
+```{r}
+#| label: fig-calibration
+#| fig-cap: "Calibration of the XGBoost models, M5 logistic regression and StatsBomb xG, 20 equal-sized bins of test shots"
+#| fig-scap: "Calibration of the XGBoost models, M5 logistic regression and StatsBomb xG"
+#| fig-height: 6
+out("calibration") |>
+  mutate(m = if_else(model == "statsbomb", "StatsBomb", tier_short[tier]),
+         Algorithm = case_when(model == "statsbomb" ~ "StatsBomb", model == "xgboost" ~ "XGBoost", TRUE ~ "Logistic regression")) |>
+  ggplot(aes(mean_pred, goal_rate, colour = Algorithm)) +
+  geom_abline(linetype = "dashed", colour = "grey60") +
+  geom_line() +
+  geom_point(size = 1.2) +
+  facet_wrap(~ m, ncol = 3) +
+  scale_x_sqrt(breaks = c(0, 0.05, 0.2, 0.4, 0.6)) +
+  scale_y_sqrt(breaks = c(0, 0.05, 0.2, 0.4, 0.6)) +
+  scale_colour_manual(values = c(`Logistic regression` = "#0072B2", XGBoost = "#E69F00", StatsBomb = "#D55E00")) +
+  coord_equal() +
+  labs(x = "Mean predicted xG (square-root scale)", y = "Actual goal rate (square-root scale)", colour = NULL)
+```
+
+
+
+@fig-calibration above shows that all 10 of our models are well calibrated, as all the binned points are near the dashed line at all mean predicted xG values, even at higher values where there are less shots with those xG values, as high probability scoring chances are very rare. Above roughly 0.2 xG, there are only 2 or 3 bins per plot. The StatsBomb model sits above the diagonal at roughly 0.1 to 0.35 xG. The calibration plots show that XGB and LR are both well calibrated for all feature sets. Similarly, the AUC scores from section 5.1.1 also have little to no difference between LR and XGB models. The biggest gap is the AUC of M2 with the LR model having a score of 0.809 and an XGB score of 0.817, an increase of only 0.008.
+
+## Feature Importance
+
+The feature importance is shown for M2, the spatial model, and M5, the extended spatial model. This project is focused on freeze-frame features, and thus the baseline models won't be evaluated, and M4 won't be used as the extended spatial model M5 includes all M4's features. We look at each variable's importance in prediction using mean absolute SHAP values, and importance in performance accuracy using Permutation Importance.
+
+### Effect on Predictions (SHAP)
+
+@fig-shap-m2 below shows the mean SHAP value of each variable used in the spatial model M2.
+
+```{r}
+#| label: fig-shap-m2
+#| fig-cap: "Mean absolute SHAP value, M2 Spatial XGBoost model"
+shap_m2 <- out("shap_importance") |>
+  filter(tier == "std_ff") |>
+  mutate(rq2_group = case_when(
+    feature %in% c("DistToKeeper", "gk_in_triangle", "DistSGK", "AngleDeviation") ~ "Goalkeeper",
+    feature == "DefendersInCone" ~ "Defender positions",
+    feature %in% c("n_within_1m", "distance.ToD1.360") ~ "Pressure",
+    TRUE ~ "Baseline"))
+
+ggplot(shap_m2, aes(x = mean_abs_shap, y = reorder(feature, mean_abs_shap), fill = rq2_group)) +
+  geom_col() +
+  scale_fill_manual(values = c(Goalkeeper = "steelblue", `Defender positions` = "darkorange",
+                               Pressure = "forestgreen", Baseline = "grey70")) +
+  labs(x = "Mean absolute SHAP value", y = NULL, fill = NULL)
+```
+
+From @fig-shap-m2 above, we see the most important feature in predictions is the `shot_angle` feature. It has the SHAP importance value of 0.57, or the largest average effect on the predicted xG. The second most important feature in predictions is `DistSGK` at 0.43, which is the most important of the spatial features. This is followed up the spatial features `DefendersInCone`, at 0.25, and `distance.ToD1.360` at 0.19. These three spatial features with high SHAP importance each come from a different category of spatial variables, as `DistSGK` is a goalkeeper variable, `DefendersInCone` is a defender position variable, and `distance.ToD1.360` is a pressure variable. The features with the lowest SHAP importance are the baseline feature `play_pattern.name` with a value of 0.02, and `n_within_1m` of 0.01.
+
+Next, we look at the SHAP importance of all the features in the model that includes all our features, the extended spatial model M5. @fig-shap-m5 below shows the mean absolute SHAP values of each feature in M5.
+
+```{r}
+#| label: fig-shap-m5
+#| fig-cap: "Mean absolute SHAP value, M5 Extended Spatial XGBoost model"
+#| fig-height: 8.5
+out("shap_importance") |>
+  filter(tier == "full") |>
+  ggplot(aes(x = mean_abs_shap, y = reorder(feature, mean_abs_shap), fill = group)) +
+  geom_col() +
+  scale_fill_manual(values = group_colours) +
+  theme(axis.text.y = element_text(size = 9)) +
+  labs(x = "Mean absolute SHAP value", y = NULL, fill = NULL)
+```
+
+In @fig-shap-m5 above, the feature with the highest SHAP importance in M5 is `DistSGK` at 0.5, even higher than its SHAP importance of 0.43 in M2 above. Just behind it is `shot_angle` at 0.47. The first new variable that wasn't in the previous spatial model, is `goal_blocked` at 0.21, from the extended spatial feature set. Similarly, density, `location.x.GK` and `pressure_gauss` are all shown as having higher SHAP importance than the most important extended baseline features ranked at 9^th^ and 10^th^, `shot.technique.name` and `goal_diff` at 0.0667 and 0.0662 respectively. The 12 least important features all have SHAP importance lower than 0.005, with `shot.follows_dribble` being the least important, has a value of 0, and was never used as a split. These 12 features come from a mixture of all four feature sets. The lowest of the original spatial features from M2 is `n_within_1m` at 0.001.
+
+Below, the table summarises the importance of each feature set in M5.
+
+```{r}
+#| label: tbl-shap-groups
+#| tbl-cap: "Share of total SHAP importance by feature group, M5 Extended Spatial XGBoost model"
+out("shap_group_share") |>
+  arrange(desc(pct_of_total)) |>
+  transmute(Group = group, Features = features, `Total SHAP importance` = total_shap,
+            `Per feature` = total_shap / features, `Share of total (%)` = pct_of_total) |>
+  kable_tbl(digits = c(0, 0, 3, 3, 1))
+```
+
+The table shows that in prediction, spatial features make up a total of 51.3% of the total SHAP importance. Baseline has the highest total SHAP importance at 0.756, while the extended baseline is the least important at 0.498. Spatial is the second most important set per feature at 0.087, while only baseline at 0.151 is higher. The extended feature sets have low importance per feature, with spatial at 0.036 and baseline at 0.023. The extended groups made up 47.1% of the importance, at roughly 1.1% per feature, while the features chosen from literature make up 52.9% of the feature importance, at roughly 4.4% per feature.
+
+### Effect on Performance (Permutation Importance)
+
+Next, we move on to Permutation Importance to see which features were the most important when it comes to model performance accuracy. @fig-perm-m2 below shows the permutation importance of the spatial model using both logistic regression and XGBoost.
+
+```{r}
+#| label: fig-perm-m2
+#| fig-cap: "Permutation importance, M2 Spatial: % increase in test set Brier score when each feature is shuffled (mean of 5 shuffles, bars = 1 SD)"
+#| fig-scap: "Permutation importance, M2 Spatial model"
+#| fig-height: 4.5
+fg <- out("feature_groups")
+perm <- out("permutation_importance") |>
+  mutate(group = case_when(feature %in% fg$standard ~ "Baseline", feature %in% fg$context ~ "Extended Baseline",
+                           feature %in% fg$ff_core ~ "Spatial", feature %in% fg$ff_extra ~ "Extended Spatial"))
+plot_perm <- function(which_tier, text_size = 11) {
+  perm |>
+    filter(tier == which_tier) |>
+    mutate(model = factor(if_else(model == "xgboost", "XGBoost", "Logistic regression"),
+                          levels = c("Logistic regression", "XGBoost"))) |>
+    ggplot(aes(x = pct_increase, y = reorder(feature, pct_increase), fill = group)) +
+    geom_col() +
+    geom_errorbar(aes(xmin = pct_increase - sd_pct, xmax = pct_increase + sd_pct), width = 0.3, colour = "grey30") +
+    facet_wrap(~ model) +
+    scale_fill_manual(values = group_colours) +
+    theme(axis.text.y = element_text(size = text_size)) +
+    labs(x = "Increase in Brier score when shuffled (%)", y = NULL, fill = NULL)
+}
+plot_perm("std_ff")
+```
+
+From @fig-perm-m2 above, we see `shot_angle` is the most important in both LR at 12.8% mean increase in Brier score when the feature values are shuffled, and XGB at 16% for M5. In LR, this is followed by `DistToGoal`, while in XGB it's followed by `DistSGK`. The most important spatial feature in LR performance `DistToKeeper` at 8.6%. In XGB, `DistSGK` is the most important spatial feature, followed by DefindersInCone and distance.To.D1360. The main differences between LR and XGB are that LR ranks the 2^nd^ most important feature as `DistToGoal`, while also showing `DistSGK` as having no importance. Conversely, XGB shows the opposite, with `DistSGK` being the 2^nd^ most important while `DistToGoal` only has an importance of 0.9%. In addition, LR has high importance on 2 variables, with relatively little importance on the other 10. XGB has more weight in the less important features, with only `play_pattern.name` having zero importance, while LR has zero importance on `play_pattern.name`, `AngleDeviation`, and `DistSGK`.
+
+@fig-perm-m5 below looks at the permutation importance of all features in the extended spatial model M5, for both the logistic regression and XGBoost models.
+
+```{r}
+#| label: fig-perm-m5
+#| fig-cap: "Permutation importance, M5 Extended Spatial: % increase in test set Brier score when each feature is shuffled (mean of 5 shuffles, bars = 1 SD)"
+#| fig-scap: "Permutation importance, M5 Extended Spatial model"
+#| fig-height: 8.5
+plot_perm("full", text_size = 8)
+```
+
+@fig-perm-m5 above shows that in the XGB model that `angle_to_goal` and DistSKG are the features with the highest permutation importance, increasing the Brier score by 10.6% and 5.9% respectively. In LR, the two most relevant features are `DistToGoal` and `location.x`, at 63.6% and 19.2% respectively.
+
+### Consistency Across Importance Measures
+
+To check whether the feature rankings depend on the importance measure, the feature SHAP rankings are compared with the gain and permutation importance rankings. This will show if the features that are important for prediction are the same as those that are important for accuracy. @tbl-importance-agreement below shows each model using XGB, and how correlated the different importance rankings are for each model.
+
+```{r}
+#| label: tbl-importance-agreement
+#| tbl-cap: "Agreement between the SHAP ranking of the features and the gain and permutation rankings"
+gain_vs_shap <- out("xgb_gain") |>
+  inner_join(out("shap_importance"), by = c("tier", "feature")) |>
+  left_join(perm |> filter(model == "xgboost") |> select(tier, feature, brier_increase), by = c("tier", "feature")) |>
+  group_by(tier) |>
+  mutate(gain_rank = rank(-gain), shap_rank = rank(-mean_abs_shap), perm_rank = rank(-brier_increase)) |>
+  ungroup()
+gain_vs_shap |>
+  group_by(tier) |>
+  summarise(Features = n(),
+            `SHAP vs gain` = cor(shap_rank, gain_rank, method = "spearman"),
+            `SHAP vs permutation` = cor(shap_rank, perm_rank, method = "spearman")) |>
+  mutate(Model = factor(tier_full[tier], levels = tier_full)) |>
+  arrange(Model) |>
+  select(Model, Features, `SHAP vs gain`, `SHAP vs permutation`) |>
+  kable_tbl(note = "Spearman rank correlation (1 = same order).", digits = 2)
+```
+
+@tbl-importance-agreement above shows that the correlation between M5's SHAP and gain is 0.9, and the correlation between its SHAP and permutation is 0.73.
+
+@fig-importance-shares below shows M5 XGB's SHAP importance, Permutation importance, and Gain (impurity) importance for each feature.
+
+```{r}
+#| label: fig-importance-shares
+#| fig-cap: "Share of total importance under SHAP, permutation and gain for the 19 features in the top 15 under at least one measure, M5 Extended Spatial XGBoost model, ordered by SHAP importance (negative permutation values set to 0)."
+#| fig-scap: "Share of total importance under SHAP"
+#| fig-height: 6
+shares <- gain_vs_shap |>
+  filter(tier == "full") |>
+  mutate(SHAP = mean_abs_shap / sum(mean_abs_shap),
+         Permutation = pmax(brier_increase, 0) / sum(pmax(brier_increase, 0)),
+         Gain = gain / sum(gain))
+top <- shares |>
+  filter(rank(-SHAP) <= 15 | rank(-Permutation) <= 15 | rank(-Gain) <= 15) |>
+  mutate(feature = reorder(feature, SHAP))
+top |>
+  pivot_longer(c(SHAP, Permutation, Gain), names_to = "measure", values_to = "share") |>
+  mutate(measure = factor(measure, levels = c("SHAP", "Permutation", "Gain"))) |>
+  ggplot(aes(share * 100, feature, fill = measure)) +
+  geom_col() +
+  facet_wrap(~ measure) +
+  scale_fill_manual(values = c(SHAP = "#0072B2", Permutation = "#D55E00", Gain = "grey60"), guide = "none") +
+  theme(axis.text.y = element_text(size = 10)) +
+  labs(x = "Share of total importance (%)", y = NULL)
+```
+
+@fig-importance-shares above shows that each importance measure has the same three most important features, `DistSGK`, `shot_angle`, and `goal_blocked`. All three measures place most of their importance on the first four features, with the remaining 50 all being below 5% of the share of total importance. The biggest difference lies in `shot.open_goal`, where SHAP is under 1%, while gain and permutation are at 3% and 1.5% respectively. Permutation has a smaller, more concentrate spread of importance, with the most important features having high importance while many others have near zero importance, while SHAP and Gain spread importance more evenly across features.
+
+### Logistic Regression Coefficients
+
+@tbl-logit-m2 below shows the results of the regression analysis done using the spatial model M2.
+
+```{r}
+#| label: tbl-logit-m2
+#| tbl-cap: "Logistic regression coefficients, M2 Spatial model"
+coef_m2 <- out("logistic_coefs") |> filter(tier == "std_ff")
+fg <- out("feature_groups")
+factor_names <- c(shot.body_part.name = "Body part", assist_type = "Assist type", play_pattern.name = "Play pattern")
+coef_m2 |>
+  mutate(feature = case_when(term == "(Intercept)" ~ "Intercept",
+                             startsWith(term, "shot.body_part.name") ~ "shot.body_part.name",
+                             startsWith(term, "assist_type") ~ "assist_type",
+                             startsWith(term, "play_pattern.name") ~ "play_pattern.name",
+                             TRUE ~ term),
+         Category = str_to_sentence(str_remove(term, paste0("^", feature))),
+         Category = if_else(feature == term | feature == "Intercept", "", Category),
+         Group = case_when(feature %in% fg$standard ~ "Baseline", feature %in% fg$ff_core ~ "Spatial", TRUE ~ ""),
+         Feature = coalesce(factor_names[feature], feature),
+         ci_low = exp(estimate - 1.96 * std.error), ci_high = exp(estimate + 1.96 * std.error)) |>
+  transmute(Group = blank_repeats(Group), Feature = blank_repeats(Feature), Category,
+            Coefficient = estimate, SE = std.error, `Odds ratio` = odds_ratio,
+            `95% CI low` = ci_low, `95% CI high` = ci_high, `p-value` = fmt_p(p.value)) |>
+  kable_tbl(note = "Odds ratio = multiplicative change in the odds of a goal for a one-unit increase, or for that category against the reference category (body part: Head; assist type: Cross; play pattern: From Corner).", digits = 3, group = "Group", lines_by = "Feature")
+```
+
+@tbl-logit-m2 above shows which features are significant in the Logistic Regression model. Of the significant spatial features, the odds ratio of `DistToKeeper` is significant at 1.083, `gk_in_triangle` at 0.671, `DefendersInCone` shows each additional defender lowers the odds of scoring by 0.74, `n_within_1m` at 0.719, and `distance.ToD1.360` at 1.075. `DistSGK` and `AngleDeviation` are not significant, and have odds ratios almost equal to 1. This is in direct contrast to XGB which says `DistSGK` is one of the most important features.
+
+## SHAP Dependence of Selected Features
+
+In this section, we look at how the features affect the SHAP values at different values for each feature.
+
+In M2, the spatial model, `DistSGK` has the highest SHAP importance of all the spatial features, and is the second most important feature other than `angle_to_goal`. The relationship, as shown in @fig-dep-m2 below, is that the further the keeper is from the shooter, the less chance of scoring, except for shots taken under roughly 5 yards away from the goalkeeper, as the SHAP peaks at about 0.55 at 5 units and then drops as the value approaches 0.
+
+The SHAP dependence plot below shows the continuous features, and does not show the most extreme 1% of values to improve readability.
+
+```{r}
+#| label: fig-dep-m2
+#| fig-cap: "SHAP value against feature value, continuous core freeze-frame features, M2 XGBoost (top 1% of values removed), each point is one test shot, the line is a smoothed average."
+#| fig-scap: "SHAP value against feature value, continuous core freeze-frame features"
+#| fig-height: 6
+count_features <- c("DefendersInCone", "gk_in_triangle", "n_within_1m")
+dependence <- out("shap_dependence") |> filter(tier == "std_ff", feature %in% out("feature_groups")$ff_core)
+shap_smooth <- function(d) {
+  d |>
+    group_by(feature) |>
+    filter(value <= quantile(value, 0.99)) |> # drop the sparse tail
+    ungroup() |>
+    ggplot(aes(x = value, y = shap_value)) +
+    geom_point(alpha = 0.1, size = 0.5, colour = "steelblue") +
+    geom_smooth(colour = "#c45a00", se = FALSE) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+    facet_wrap(~ feature, scales = "free_x", ncol = 2) +
+    labs(x = "Feature value", y = "SHAP value (log-odds)")
+}
+shap_box <- function(d) {
+  ggplot(d, aes(x = factor(value), y = shap_value)) +
+    geom_boxplot(fill = "steelblue", alpha = 0.4, outlier.size = 0.3) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+    facet_wrap(~ feature, scales = "free_x") +
+    labs(x = "Feature value", y = "SHAP value (log-odds)")
+}
+shap_smooth(filter(dependence, !feature %in% count_features))
+```
+
+@fig-dep-m2 above also shows that as `AngleDeviation` increases past 40, the SHAP value starts to rise. In `distance.ToD1.360`, we see SHAP trend upwards the further away the closest defender is. `DistToKeeper` shows that when the keeper is less than 5 yards from the goal that SHAP is negative, but is positive and increases from 5 units and onwards.
+
+@fig-dep-m2-counts below shows the SHAP value dependent on the feature value for the non-continuous M2 spatial features.
+
+```{r}
+#| label: fig-dep-m2-counts
+#| fig-cap: "SHAP value for each value of the count core freeze-frame features, M2 XGBoost"
+shap_box(filter(dependence, feature %in% count_features))
+```
+
+@fig-dep-m2-counts above shows for `DefendersInCone` that having no defenders between the shoot in the goal has as positive SHAP value, and that having at least one defender has a negative SHAP value, decreasing as more defenders are added until about 4 defenders onwards. The `gk_in_triangle` shows that an open goal has a high positive SHAP value, while the goalkeeper between the shooter and the goal has a slight negative SHAP value. The number of defenders within 1m has a SHAP at roughly 0 for 0 defenders, and slightly negative if there's at least 1 defender.
+
+Next, we look at the extended features with highest SHAP importance from M5. @fig-dep-m5 below shows the most important continuous features of the most not included in M2.
+
+```{r}
+#| label: fig-dep-m5
+#| fig-cap: "SHAP value against feature value for the six Extended Baseline and Extended Spatial features with the largest SHAP importance among features with at least 10 distinct values, M5 Extended Spatial XGBoost model (top 1% of values removed). Each point is one test shot; the line is a smoothed average."
+#| fig-scap: "SHAP value against feature value, top continuous Extended features, M5 XGBoost model"
+#| fig-height: 7
+dep_full <- out("shap_dependence") |> filter(tier == "full")
+n_values <- dep_full |> group_by(feature) |> summarise(k = n_distinct(value))
+ext <- out("shap_importance") |> filter(tier == "full", group %in% c("Extended Baseline", "Extended Spatial"))
+top_cont <- ext |> semi_join(filter(n_values, k >= 10), by = "feature") |> slice_max(mean_abs_shap, n = 6) |> pull(feature)
+top_disc <- ext |> semi_join(filter(n_values, k < 10), by = "feature") |> slice_max(mean_abs_shap, n = 2) |> pull(feature)
+shap_smooth(dep_full |> filter(feature %in% top_cont) |> mutate(feature = factor(feature, levels = top_cont)))
+```
+
+@fig-dep-m5 above shows that if the shooter can see nearly the entire goal, the SHAP is positive, while as the goal gets more blocked it decreases, and is negative from 0.4 onwards. The density shows that the more defenders there are close to and between the shooter and the goal, the lower the chance of scoring. In addition, `pressure_gauss` shows that having defenders closer to the shooter regardless of direction reduces the chance of scoring. The length of the key pass prior to the shot shows that the longer the pass, the lower the chance of scoring, up until 45 yards away where it starts to increase toward 0. The `goal_diff` shows that being far ahead has high SHAP values and far behind has low SHAP values.
+
+@fig-dep-m5-counts below shows the two highest SHAP importance non-continuous extended features.
+
+```{r}
+#| label: fig-dep-m5-counts
+#| fig-cap: "SHAP value for each value of the count and yes/no features among the top Extended features, M5 Extended Spatial XGBoost model."
+#| fig-scap: "SHAP value for each value of the count and yes/no features among the top Extended features"
+shap_box(dep_full |> filter(feature %in% top_disc) |> mutate(feature = factor(feature, levels = top_disc)))
+```
+
+@fig-dep-m5-counts above shows that the number of players from either team, including the goalkeeper, affects the chance of scoring. An open goal or just one player are positive, with two or more being negative. The more crowded, the less chance of scoring. Shooting with one's weak foot has a negative SHAP value, whereas shots not taken with the weak foot have positive SHAP.
+
+## Comparison to StatsBomb's Proprietary xG
+
+We will now compare our 10 models and their performance to that of the benchmark StatsBomb model based on their Brier scores. @tbl-statsbomb below shows the difference of each model to StatsBomb, and whether the difference is statistically significant.
+
+```{r}
+#| label: tbl-statsbomb
+#| tbl-cap: "All models against the StatsBomb model, test set, ordered from best to worst"
+sb <- out("statsbomb_test")
+bind_rows(
+  tibble(Model = "StatsBomb model", Algorithm = "", Brier = fmt_num(sb$brier_old[1]),
+         `Improvement on StatsBomb (%)` = "", `p-value` = ""),
+  sb |>
+    mutate(model_full = tier_full[tier_of(new_model)], Algorithm = algo_short[model_of(new_model)]) |>
+    group_by(model_full) |> mutate(best = min(brier_new)) |> ungroup() |>
+    arrange(best, brier_new) |>
+    transmute(Model = blank_repeats(model_full), Algorithm, Brier = fmt_num(brier_new),
+              `Improvement on StatsBomb (%)` = sprintf("%.1f", 100 * improvement / brier_old),
+              `p-value` = fmt_p(p_value))) |>
+  kable_tbl(note = "Improvement = % reduction in Brier score compared with the StatsBomb model (negative = worse); p-value from a Wilcoxon signed-rank test on per-shot squared errors.", lines_by = "Model")
+```
+
+@tbl-statsbomb above shows that all 4 baseline models, Baseline and Extended Baseline models M1 and M3, have higher (worse) Brier scores than the StatsBomb model's Brier score of 0.0736. The spatial model M2 using LR performs 1.5% worse, while with XGB performs roughly the same as StatsBomb, performing only 0.1% worse. Adding the standard spatial features to the extended baseline model results in M4 XGB with an improvement in Brier score of 0.9% compared to StatsBomb, although the per-shot errors are not significantly different with a p-value of 0.54. M4 LR has almost exactly the same Brier score as StatsBomb. The best model is the extended spatial model M5, with XGB having a 1.1% improvement over StatsBomb, and is statistically significant, and LR having a 0.6% improvement in brier, but with a p-value of 0.13.
+
+@fig-sb-m2 below compares the spatial model M2 using XGB, and StatsBomb, by using the test set xG prediction values and the StatsBomb xG values from the data. The majority of xG values are small, so the plot is on a squared-root scale for clarity.
+
+```{r}
+#| label: fig-sb-m2
+#| fig-cap: "xG from the M2 Spatial XGBoost model against xG from the StatsBomb model for each test shot, coloured by outcome. The dashed line marks equal predictions."
+#| fig-scap: "M2 Spatial XGBoost xG against StatsBomb xG, test shots"
+#| fig-height: 5.5
+w <- dat("predictions") |>
+  filter(set == "test", !is.na(pred), (model == "xgboost" & tier == "std_ff") | model == "statsbomb") |>
+  mutate(name = if_else(model == "statsbomb", "statsbomb", "ours")) |>
+  select(id, goal, name, pred) |>
+  pivot_wider(names_from = name, values_from = pred) |>
+  drop_na() |>
+  arrange(goal) # goals drawn on top
+ggplot(w, aes(statsbomb, ours, colour = factor(goal, labels = c("No goal", "Goal")))) +
+  geom_point(alpha = 0.3, size = 1) +
+  geom_abline(linetype = "dashed") +
+  scale_x_sqrt(limits = c(0, 1), breaks = c(0, 0.1, 0.2, 0.4, 0.6, 0.8, 1)) +
+  scale_y_sqrt(limits = c(0, 1), breaks = c(0, 0.1, 0.2, 0.4, 0.6, 0.8, 1)) +
+  coord_equal() +
+  scale_colour_manual(values = c(`No goal` = "#F8766D", Goal = "#00BFC4")) +
+  labs(x = "StatsBomb (square-root scale)", y = "M2 XGB (square-root scale)", colour = NULL)
+```
+
+@fig-sb-m2 above shows that xG predictions from M2 XGB are highly correlated with the xG values from StatsBomb, with a correlation of 0.921. @fig-sb-m5 below shows the same comparison using our best performing model M5 XGB, the extended spatial model.
+
+```{r}
+#| label: fig-sb-m5
+#| fig-cap: "xG from the M5 Extended Spatial XGBoost model against xG from StatsBomb for each test shot, coloured by outcome, square-root scale on both axes. The dashed line marks equal predictions."
+#| fig-scap: "M5 Extended Spatial XGBoost xG against StatsBomb xG, test shots"
+#| fig-height: 5.5
+w <- dat("predictions") |>
+  filter(set == "test", !is.na(pred), (model == "xgboost" & tier == "full") | model == "statsbomb") |>
+  mutate(name = if_else(model == "statsbomb", "statsbomb", "ours")) |>
+  select(id, goal, name, pred) |>
+  pivot_wider(names_from = name, values_from = pred) |>
+  drop_na() |>
+  arrange(goal) # goals drawn on top
+ggplot(w, aes(statsbomb, ours, colour = factor(goal, labels = c("No goal", "Goal")))) +
+  geom_point(alpha = 0.3, size = 1) +
+  geom_abline(linetype = "dashed") +
+  scale_x_sqrt(limits = c(0, 1), breaks = c(0, 0.1, 0.2, 0.4, 0.6, 0.8, 1)) +
+  scale_y_sqrt(limits = c(0, 1), breaks = c(0, 0.1, 0.2, 0.4, 0.6, 0.8, 1)) +
+  coord_equal() +
+  scale_colour_manual(values = c(`No goal` = "#F8766D", Goal = "#00BFC4")) +
+  labs(x = "StatsBomb (square-root scale)", y = "M5 XGB (square-root scale)", colour = NULL)
+```
+
+@fig-sb-m5 above shows the M5 XGB is also linearly correlated with StatsBomb's predictions, with a correlation of 0.933. Most of the points lie near the dashed line. The widest spread between points lies between xG values of 0.2 to 0.6, and the biggest chances with xG, values of above 0.75, having lower predictions from our model than from StatsBomb.
+
+## Testing the Research Hypotheses
+
+The results of the models can be used for testing our research hypotheses as listed in section 1.4. We compare the Brier scores of our various models, and note the percentage improvement from adding additional features to a model. @tbl-hypotheses below shows these comparisons and which hypotheses they relate to. In each case, only the XGBoost models are used. In @tbl-hypotheses below, the model mentioned first on the left in Comparison column is the model we begin with, and we compare it to the model on the right that we achieve by adding the feature sets listed in the Features added column.
+
+```{r}
+#| label: tbl-hypotheses
+#| tbl-cap: "Brier scores of XGBoost models before and after adding each set of features, test set"
+added <- c(`std_ff-std` = "Spatial", `std_ctx_ff-std_ctx` = "Spatial", `full-std_ctx_ff` = "Extended Spatial",
+           `full-std_ctx` = "Spatial + Extended Spatial", `std_ctx-std` = "Extended Baseline", `std_ctx_ff-std_ff` = "Extended Baseline")
+out("hypothesis_tests") |>
+  filter(model_of(new_model) == "xgboost") |>
+  mutate(new = tier_of(new_model), old = tier_of(old_model)) |>
+  transmute(Hypothesis = hypothesis, Comparison = paste(tier_short[old], "vs", tier_short[new]),
+            `Features added` = added[paste(new, old, sep = "-")],
+            `Brier before` = fmt_num(brier_old), `Brier after` = fmt_num(brier_new),
+            `Improvement (%)` = sprintf("%.1f", 100 * improvement / brier_old), `p-value` = fmt_p(p_value)) |>
+  kable_tbl(note = "Improvement = % reduction in Brier score; p-value from a Wilcoxon signed-rank test on per-shot squared errors.", lines_by = "Hypothesis")
+```
+
+@tbl-hypotheses above does two comparisons for H1, first it adds the standard spatial features to the baseline model, and then it adds the standard spatial features to the extended baseline model. For H2, it compares M4, the extended baseline plus standard spatial features model, with the extended spatial model M5 by adding the extended spatial features. The M3 vs M5 comparison shows the difference between an extended baseline model and an extended spatial model. The final two comparisons are used to show the improvement in model performance when adding the extended baseline features to the baseline model and the spatial model. Other performance metrics will be used from @tbl-metrics-test and @tbl-class-metrics.
+
+### Standard xG Model Performance
+
+H1: Adding spatial features to a standard xG model will significantly improve prediction performance (Brier score, log loss, and AUROC) of shot outcome relative to a baseline model that uses only distance, angle, body part, assist type and play pattern.
+
+As shown in @tbl-metrics-test above, M2 XGB outperforms M1 XGB across all probabilistic metrics. @tbl-hypotheses shows that M2 XGB had a Brier score of 0.0737, a 5% improvement over M1 XGB which had a Brier of 0.0776. The Wilcoxon test showed the per shot squared errors of M2 XGB were statistically significantly different from those of M1 XGB with a p-value less than 0.001. @fig-improve-m1-m2 below shows all the probabilistic metrics and the classification metrics using the goal rate of 0.103 as the cut-off.
+
+```{r}
+#| label: fig-improve-m1-m2
+#| fig-cap: "Improvement in each test set metric from M1 XGB to M2 XGB"
+#| fig-height: 5.5
+improvement_plot(metric_improvement("std", "std_ff"), "Improvement from M1 XGB to M2 XGB (%)")
+```
+
+@fig-improve-m1-m2 above shows that adding the spatial features has improved model performance over using just standard baseline features across all metrics.
+
+@fig-improve-m3-m4 below shows the performance improvement of all metrics when adding the standard spatial features to the extended baseline model.
+
+```{r}
+#| label: fig-improve-m3-m4
+#| fig-cap: "Improvement in each test set metric from M3 XGB to M4 XGB"
+#| fig-height: 5.5
+improvement_plot(metric_improvement("std_ctx", "std_ctx_ff"), "Improvement from M3 XGB to M4 XGB (%)")
+```
+
+All metrics are positive, showing that even with an abundance of features and information, model performance improves when given freeze frame context from even just the standard spatial features.
+
+### Extended Spatial Features
+
+H2: Extending the spatial feature set beyond the literature-standard features (goalkeeper position, defender positions and pressure on the shooter) with additional freeze-frame features will produce a further, meaningful improvement in predictive performance.
+
+First, we look at the spatial model to see which spatial features drive the most improvement - goalkeeper position, defender positions, or pressure geometry? Using SHAP to determine feature importance, as shown in @fig-shap-m2 above, the most important spatial feature is `DistSGK` (the distance between the shooter and the goalkeeper). This feature is more important than all the baseline features except `shot_angle`. The next most important spatial feature is `DefendersInCone`, followed closely by `distance.ToD1.360`, then `DistToKeeper`, `gk_in_triangle`, `AngleDeviation`, and finally the pressure variable `n_within_1m`, which is by far the least important.
+
+The spatial features are split into defender positions, goalkeeper features, and pressure features. The goalkeeper features appear to be the most important with `DistSGK` being the second most important feature. Then with about half the SHAP value of `DistSGK`, defender positions with `DefendersInCone` is in third place, closely followed by the pressure variable `distance.ToD1.360`. The goalkeeper variables `DistToKeeper`, `gk_in_triangle` and `AngleDeviation` have some importance, while the pressure variable `n_within_1m` has nearly zero importance.
+
+Next, we look at the improvement in model performance due to the inclusion of extended spatial features in the extended spatial model. From @tbl-metrics-test above, we see the performance metrics for M4 and M5 using XGB. @fig-improve-m4-m5 below shows the percentage improvement in each metric.
+
+```{r}
+#| label: fig-improve-m4-m5
+#| fig-cap: "Improvement in each test set metric from M4 XGB to M5 XGB"
+#| fig-height: 5.5
+improvement_plot(metric_improvement("std_ctx_ff", "full"), "Improvement from M4 XGB to M5 XGB (%)")
+```
+
+As @fig-improve-m4-m5 above shows, adding extended spatial features results in a small improvement in all performance metrics. @tbl-hypotheses above shows that the Brier score improves by 0.2%, and that the per-shot squared errors are significantly different with a p-value less than 0.001. Thus, M5 XGB performs better than M4 XGB, but by a small margin.
+
+### Performance Based on Shot Location
+
+H3: The improvement in predictive performance from adding spatial features will be larger for shots taken inside the penalty box than for shots taken outside it, since spatial context plays a proportionally larger role in congested, close-range situations.
+
+Does the improvement from spatial features vary by shot location (inside the box vs. outside the box)? We calculated the Brier scores using the baseline and spatial models on shots inside the box, then outside the box, and the results are shown in @fig-zone below. There were 7,814 shots inside the box and 4,810 outside the box. The point of interest is the improvement the spatial model provides over the baseline in both contexts. In @fig-zone below we see the percentage improvement in the probability and ranking performance metrics resulting from adding the standard spatial features to the baseline models M1 and M3.
+
+```{r}
+#| label: fig-zone
+#| fig-cap: "Improvement from the Spatial features, inside vs outside the box"
+#| fig-height: 6.5
+z <- bind_rows(zone_improvement("std", "std_ff"), zone_improvement("std_ctx", "std_ctx_ff")) |>
+  mutate(comparison = fct_inorder(comparison))
+
+ggplot(z, aes(improvement, metric, fill = zone)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  geom_text(aes(label = sprintf("%.1f%%", improvement)), position = position_dodge(width = 0.8),
+            hjust = -0.15, size = 3.8) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = zone_colours, breaks = names(zone_colours)) +
+  labs(x = "Improvement from adding the Spatial features (%)", y = NULL, fill = NULL) +
+  facet_wrap(~ comparison, ncol = 1)
+```
+
+@fig-zone above shows that Brier and Log loss show a higher improvement on shot predictions inside the box than outside the box in both model comparisons, although both the difference between the two is bigger in the standard model comparison. AUROC shows both perform equally, and improvement isn't dependent on whether or not a shot is taken in the box. PR-AUC shows that shots outside the box have a better improvement in predictions. In addition, @fig-zone-m3-m5 below compares the extended baseline model with the extended spatial model, which adds all the spatial features.
+
+```{r}
+#| label: fig-zone-m3-m5
+#| fig-cap: "Improvement from M3 XGB to M5 XGB, inside compared with outside the box"
+#| fig-height: 4.5
+z <- zone_improvement("std_ctx", "full")
+
+ggplot(z, aes(improvement, metric, fill = zone)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  geom_text(aes(label = sprintf("%.1f%%", improvement)), position = position_dodge(width = 0.8),
+            hjust = -0.15, size = 3.8) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = zone_colours, breaks = names(zone_colours)) +
+  labs(x = "Improvement from M3 XGB to M5 XGB (%)", y = NULL, fill = NULL)
+```
+
+Again, we see Brier has a greater increase in performance inside the box than outside the box. Log loss shows they are roughly the same, while AUROC and PR-AUC shows outside the box has a higher performance improvement, with the difference in PR-AUC score improvements being much smaller than in the previous comparisons. The relative differences are illustrated in @fig-zone-share below.
+
+```{r}
+#| label: fig-zone-share
+#| fig-cap: "Share of each metric's improvement that comes from shots inside and outside the box"
+#| fig-scap: "Share of each metric's improvement that comes from shots inside and outside the box"
+#| fig-height: 7
+z3 <- bind_rows(zone_improvement("std", "std_ff"), zone_improvement("std_ctx", "std_ctx_ff"),
+                zone_improvement("std_ctx", "full")) |>
+  mutate(comparison = fct_inorder(comparison)) |>
+  group_by(comparison, metric) |>
+  mutate(share = improvement / sum(improvement)) |>
+  ungroup()
+ggplot(z3, aes(share, metric, fill = fct_rev(zone))) +
+  geom_col(width = 0.75) +
+  geom_text(aes(label = sprintf("%.1f%%", improvement)), position = position_stack(vjust = 0.5),
+            colour = "white", size = 3.6) +
+  geom_vline(xintercept = 0.5, linetype = "dashed") +
+  facet_wrap(~ comparison, ncol = 1) +
+  scale_x_continuous(labels = scales::percent) +
+  scale_fill_manual(values = zone_colours, breaks = names(zone_colours)) +
+  labs(x = "Share of the improvement (inside vs outside the box)", y = NULL, fill = NULL)
+```
+
+@tbl-zone below shows the Brier score for the three comparisons in @fig-zone-share above and the significance of the difference in the per-shot improvement between shots inside and outside the box.
+
+```{r}
+#| label: tbl-zone
+#| tbl-cap: "Brier score improvement from adding spatial features inside and outside the penalty box, XGBoost models, test set"
+added <- c(`std_ff-std` = "Spatial", `std_ctx_ff-std_ctx` = "Spatial", `full-std_ctx` = "Spatial + Extended Spatial")
+out("zone_tests") |>
+  filter(model_of(new_model) == "xgboost") |>
+  mutate(new = tier_of(new_model), old = tier_of(old_model),
+         key = factor(paste(new, old, sep = "-"), levels = names(added))) |>
+  arrange(key, desc(in_box)) |>
+  transmute(`Features added` = if_else(in_box, added[as.character(key)], ""),
+            Compared = if_else(in_box, tier_short[old], ""),
+            With = if_else(in_box, tier_short[new], ""),
+            Zone = if_else(in_box, "Inside the box", "Outside the box"),
+            `Brier compared` = signif(brier_old, 3), `Brier with` = signif(brier_old - brier_improvement, 3),
+            `Improvement (%)` = sprintf("%.1f", pct_improvement),
+            `p-value` = if_else(in_box, fmt_p(p_value), "")) |>
+  kable_tbl(note = "The p-value is from a Wilcoxon rank-sum test comparing the per-shot improvement inside and outside the box. M1 to M2 and M3 to M4 test H3; M3 to M5 is shown for comparison.", lines_by = "Features added")
+```
+
+Each comparison shows that in terms of Brier score, the predictions improve more for shots inside the box than outside the box, and that the differences in per-shot improvement between inside and outside the box are significant, with all p-values being less than 0.001.
+
+## Summary
+
+The best performing model is the extended spatial model using XGBoost (M5 XGB), with performance metrics of Brier 0.0728, AUROC 0.825, and Brier skill score 19.9%. It outperforms the benchmark StatsBomb model with performance metrics of Brier 0.0736, AUROC 0.820, and Brier skill score 19.1%. The improvement in Brier score is 1.1% and is significant with p-value less than 0.001. The spatial model M2 XGB is almost level with StatsBomb, with a Brier only 0.1% worse, using only 12 features. All models are similarly well calibrated, with StatsBomb under-predicting between about 0.1 and 0.35 xG. Adding the 22 Extended Baseline features to the baseline model (M1 to M3) improves Brier by 3.4%, which is less than when adding the 7 Spatial features (M1 to M2) which improves Brier by 5%.
+
+Adding spatial features to models improves their performance. When using XGBoost, adding the spatial features to the baseline model M1, resulting in the spatial model M2, improved the Brier score by 5%. Similarly, adding the spatial features to the extended baseline model (M3 to M4) improved Brier by 2.7%. Both had p-values less than 0.001. In both cases, all metrics (including Brier) improved when adding the spatial feature set. Further adding the extended spatial feature set to M4 results in a significant but small improvement in Brier of 0.2%.
+
+The prediction improvement on shots in and outside the box improve differently depending on the performance metric. Brier and Log loss show that predictions improve more inside the box, while AUROC shows equal improvement, and PR-AUC shows shots outside the box have a higher improvement. The Brier improvement differences between inside and outside the box were significant in each comparison with p-values less than 0.001.
+
+Across all five feature sets, XGBoost was never worse than logistic regression. Each XGB model had a slightly better Brier scores than their Logistic Regression counterparts, but the difference was only significant for M2 and M4, with Brier improvements of 1.3% and 0.8% respectively.
+
+When looking at the feature importance of the spatial features, `DistSGK` had the highest SHAP importance in both M2 and M5. In M5, the extended spatial model, the spatial features accounted for 51.3% of the total SHAP importance.

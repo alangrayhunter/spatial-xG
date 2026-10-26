@@ -1,0 +1,138 @@
+# Introduction
+
+```{r}
+#| include: false
+source(here::here("_common.R"))
+```
+
+## Context and Background
+
+Football, also known as soccer, is a team sport played between two teams of eleven players on a rectangular pitch, with a goalpost at each end. Shown in @fig-pitch below:
+
+```{r}
+#| label: fig-pitch
+#| fig-cap: "Football Pitch"
+ggplot() +
+  annotate_pitch(dimensions = pitch_statsbomb, fill = "springgreen4", colour = "white") +
+  theme_pitch() +
+  coord_fixed()
+```
+
+A match lasts 90 minutes and is made up of two halves of 45 minutes plus added time. The aim of a football game is to score more goals than the opposing team. A goal is scored when the ball crosses the goal line between the goalposts into the goal net. Apart from the goalkeeper, players are not allowed to touch the ball with their hands, and the goalkeeper may only do this inside their own penalty box, the larger marked box in front of each goal. A team therefore tries to get the ball past the opposing defenders and goalkeeper, while the defending team tries to stop it.
+
+A shot is an attempt to score by kicking, heading or deflecting the ball towards the goal. A shot can end in a goal, be saved by the goalkeeper (a no goal), be blocked by a defend (another no goal), or miss the goal altogether ("off target" - another no goal).
+
+Shots are usually grouped into types, depending on how the chance came about. An open play shot happens during the normal flow of the game. The other types come from set pieces, where game play restarts from a fixed position. A free kick is awarded to a team when the opposition commits a foul, and the team can shoot directly at goal from where the foul happened. A penalty kick is awarded to a team when a foul is committed to them inside the opposing teams' penalty box, and it is taken from the penalty spot, the dot in front of the goalpost, with only the goalkeeper to beat. A corner kick is awarded to the attacking team when the ball crosses the goal line after last touching an opposing team members player, and it is taken from the corner of the pitch, usually as a cross into the penalty area.
+
+Shots can also be taken with the right foot, the left foot, the head or occasionally another part of the body, excluding the hand.
+
+Football has been an ever-growing sport, not only in terms of quality of players, pitch used, type of ball, teams, and fanbases, but also in the analytics and technology used within the sport. One of the biggest changes has been the introduction of technology to help referees make better decisions. In the past, football used to rely solely on on-field referees, but now they have incorporated Video Assistant Referees (VAR), which is a referee that consists of multiple camera angles and has improved replay technology which aids the referees in making decisions like whether the ball was offside, if a player committed a foul, and incidents that the on-field referee may have missed during open play.
+
+This evolution of technology in football has not only changed refereeing, but it has also changed how football performance is analysed. It has introduced technology that can track the speed a player is running, how much of the pitch they cover, the passes they make, and the position of defenders at the exact moment when a shot is taken. This has led to the introduction of the calculation of Expected Goals of a match, known as xG.
+
+xG is a metric between zero and one which determines how likely a shot by a player will result in a goal. This metric is calculated using a limited set of data points which are recorded at the moment of the shot. These data points include the ball's distance to the goal, the body part that was used to take the shot, the angle of the ball to the goal, the assist type, and the play pattern that created the chance. xG is used by clubs and recruiters to evaluate players, identify talent, and to inform their tactical decisions.
+
+As a statistic, xG is used in a variety of ways. Below we look at @fig-xg-timeline and @fig-xg-result, created using the xG values from the StatsBomb dataset, to illustrate ways xG is used in the footballing world.
+
+```{r}
+#| label: fig-xg-timeline
+#| fig-cap: "Cumulative StatsBomb xG over one match (Chelsea 2-2 Tottenham Hotspur, Premier League 2015/16). Each step is a shot and the dots are goals"
+#| fig-scap: "Cumulative StatsBomb xG over one match (Chelsea 2-2 Tottenham Hotspur, Premier League 2015/16)"
+#| fig-height: 4
+timeline <- out("xg_timeline")
+ggplot(timeline, aes(minute, cum_xg, colour = team.name)) +
+  geom_step(linewidth = 1) +
+  geom_point(data = filter(timeline, goal == 1), size = 4) +
+  scale_colour_manual(values = c(Chelsea = "#0072B2", `Tottenham Hotspur` = "grey40"), name = NULL) +
+  scale_x_continuous(breaks = seq(0, 90, 15)) +
+  labs(x = "Minute", y = "Cumulative xG")
+```
+
+@fig-xg-timeline above shows the cumulative xG over the course of a match. This specific match from 2016 is a famous one, as Tottenham Hotspur needed to win their match against Chelsea to stay in the title race against league leaders at the time Leicester City. The figure tells a story, Tottenham were dominating the match, creating enough scoring chances to win. However, after leading by two goals, Chelsea scored two goals from low goal scoring opportunities. This is an example of how xG can be used on a match basis, to assess a team's performance, and to judge whether a team played better or worse than the resulting scoreline (in this case 2-2) predicted, and unfortunately for Tottenham, this resulted in Leicester City winning the league.
+
+@fig-xg-result below shows that cumulative xG from a match closely correlates with the match outcome.
+
+```{r}
+#| label: fig-xg-result
+#| fig-cap: "Match results by StatsBomb xG difference (team minus opponent), all 2,651 men's matches, each match counted from both teams' side"
+#| fig-scap: "Match results by StatsBomb xG difference (team minus opponent), all 2,651 men's matches"
+#| fig-height: 4.5
+out("xg_match_results") |>
+  mutate(xg_bin = cut(pmin(pmax(xg_diff, -2.5), 2.5), breaks = seq(-2.5, 2.5, by = 0.5), include.lowest = TRUE,
+                      labels = c("-2 or less", "-2 to -1.5", "-1.5 to -1", "-1 to -0.5", "-0.5 to 0",
+                                 "0 to 0.5", "0.5 to 1", "1 to 1.5", "1.5 to 2", "2 or more"))) |>
+  ggplot(aes(xg_bin, fill = result)) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c(Loss = "#D55E00", Draw = "grey70", Win = "#0072B2"), name = NULL) +
+  scale_y_continuous(labels = scales::percent) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "xG difference (team minus opponent)", y = "Share of matches")
+```
+
+@fig-xg-result above shows that on average, matches where teams end the match with higher cumulative xG than their opponents, usually win the match. Teams with much lower xG values than their opponents in a match usually lose the match. Matches where teams are level on xG are more evenly split by outcome. The proportion of draws is highest where the xG difference between teams is close to 0. Based on this plot, and the Tottenham example above, a team in Tottenham's position, with over 1.5 xG more than their opponent, win around 78% of the time.
+
+## Overview 
+
+The xG metric was first introduced into football analytics around 2012, and the standard models used to calculate it have relied on the limited data points mentioned above. These models describe a shot using only where the shooter is and a few event details, such as body part used and the type of assist. They capture where the shot was taken from, but not the situation around it i.e the position of the goalkeeper, how many defenders are blocking the shot, or how closely the shooter is being marked. This means that standard models can sometimes lead to inaccurate xG predictions that do not necessarily match what you would expect from watching the match. Two shots from the same spot can therefore receive the same xG even when one faces an open goal and the other faces a goalkeeper and three defenders.
+
+An example of this limitation happened during a Premier League match between Leicester City and Bournemouth in 2018. In this match there was a shot that was taken from directly in front of the goal and the standard model predicted a high xG of 0.93. However, what the model did not account for was that there was a thicket of defenders in front of the goal, which made it much harder to score than the xG suggested. This example highlights how the traditional xG models are blind to the context and shows why there is need for better approaches that include spatial information.
+
+One way of bringing spatial context into xG is to use freeze-frame data. A freeze frame is a snapshot of where the players were standing at the moment a shot was taken, and it records the position of the goalkeeper and the outfield defenders as well as the shooter. StatsBomb began collecting this data for every shot in 2018, and it makes it possible to measure things that the standard variables cannot, such as how many defenders are between the shooter and the goal, how far the goalkeeper is from the shooter, and how closely the shooter is being pressured.
+
+This matters in practice because xG is used to make real decisions. Clubs and recruiters use it to judge how well players create and finish chances, and a model that misjudges the difficulty of a shot can give a misleading picture of a player. If a model overrates shots taken into a crowd of defenders, a player who often shoots in those situations will look worse at finishing than they really are, and the opposite holds for shots taken with space.
+
+This study therefore asks whether adding freeze-frame features to an xG model improves how well it predicts whether a shot becomes a goal. We build models with and without these features, using both a simple, easily explained model (logistic regression) and a more flexible one (XGBoost), and compare them on the same data.
+
+## Scope
+
+This study will focus solely on shots taken from open play, using data from multiple competitions available in the StatsBomb Open Data repository. Penalties will not be used in this analysis as they are taken under the exact same conditions every time and including them could introduce bias into the model comparisons. Free kicks and corners will not be included as well, reason being that a direct shot to goal from a free kick or corner do not face the same spatial context that we are trying to model in this study.
+
+This study is restricted to men's competitions. Prior work has shown that shot outcome and feature importance differ meaningfully between men's and women's football [@bransen2021], and an initial comparison of the two samples available in this dataset have shown that there are 34,373 women's shots against 66,854 men's shots, which confirmed that this difference is present here too. Rather than pooling the two and confusing the spatial effects this study is concerned with, gender is fixed by restricting the sample to men's competitions.
+
+This analysis will compare standard and spatial models. The standard model will be the baseline model that uses the traditional xG features: distance, angle, body part, assist type, and play pattern. The spatial models are enhanced models that add spatial features like goalkeeper position, the position of the defender, and pressure geometry. To evaluate the models, we will use standard classification metrics including Brier Score, and SHAP statistics. We will also use cross-validation to make sure the results are reliable and can be generalised.
+
+The study does not try to build the best possible xG model, and it does not model individual players or teams. Its aim is to measure what freeze-frame features add to a model that would otherwise only use the shot itself.
+
+All player identities are kept anonymous throughout this study, in line with ethical research practices.
+
+## Objectives
+
+The main aim of this study is to find out whether the addition of freeze frame contextual features improves the predictive accuracy of xG models significantly compared to a model that only uses the traditional variables.
+
+To achieve this, we have set out the following research questions and hypotheses.
+
+Research Questions:
+
+1.  How well does a standard xG model perform when it only uses distance, angle, body part, assist type and play pattern?
+
+2.  What spatial features drive the most improvement: goalkeeper position, defender positions, or pressure geometry?
+
+3.  Does the improvement from spatial features vary by shot location (for example inside the box vs. outside the box)?
+
+Hypotheses:
+
+1.  Adding spatial features to a standard xG model will significantly improve prediction performance (Brier score, log loss, and AUROC) of shot outcome relative to a baseline model that uses only distance, angle, body part, assist type and play pattern.
+
+2.  Extending the spatial feature set beyond the literature-standard features (goalkeeper position, defender positions and pressure on the shooter) with additional freeze-frame features will produce a further, meaningful improvement in predictive performance.
+
+3.  The improvement in predictive performance from adding spatial features will be larger for shots taken inside the penalty box than for shots taken outside it, since spatial context plays a proportionally larger role in congested, close-range situations.
+
+## Structure
+
+The rest of the chapters in this paper will be structured as follows:
+
+Chapter 2 will be the Literature Review. This chapter will review the existing research on football analytics, expected goals and spatial models. It will also cover the development of freeze-frame approaches and identify any gaps in the current literature that this paper aims to address.
+
+Chapter 3 will be the Exploratory Data Analysis. This chapter will analyse and summarise the main characteristics of the dataset to help us understand what the data looks like before any statistical modelling and hypothesis testing is done.
+
+Chapter 4 will be the Methodology. This chapter will describe the dataset, explain how the data was processed, the feature engineering process, and will outline the models used and the evaluation framework that are applied to compare them.
+
+Chapter 5 will be the Results. This chapter will present the findings of the analysis, including the model performance comparisons, feature importance results, and statistical tests of the hypotheses.
+
+Chapter 6 will be the Discussion. This chapter will interpret the results, acknowledge the limitations of the study, and suggest direction for future research.
+
+Finally, Chapter 7 is the Conclusion, which summarises the main findings and returns to the aim of the study.
+
+## Code
+
+All our code used for our analysis can be found on our GitHub repository using the following link: [REPO LINK]

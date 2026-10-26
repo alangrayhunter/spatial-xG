@@ -1,0 +1,63 @@
+```{r}
+#| include: false
+# Runs the pipeline files whose outputs are missing, in order (and every file after the first one that runs,
+# since later files use its results). If all the outputs exist, nothing runs and the book only loads them.
+library(here)
+steps <- list(
+  p1_import.qmd = c("data/Comp_Match_Data.RData"),
+  p2_data.qmd = c("data/key_passes_raw.rds", "data/extra_events.rds", "data/shots_comp_info.rds",
+                  "data/shots_cleaned.rds", "data/shots_final.rds"),
+  p3_features.qmd = c("data/shots_model.rds", "outputs/feature_sets.rds", "outputs/feature_groups.rds"),
+  p4_models.qmd = c("outputs/match_split.rds", "outputs/xgb_tuning.rds", "data/predictions.rds", "data/shap.rds",
+                    "outputs/logistic_coefs.rds", "outputs/xgb_gain.rds", "outputs/permutation_importance.rds"),
+  p5_results.qmd = paste0("outputs/", c("metrics", "class_metrics", "hypothesis_tests", "statsbomb_test",
+                                        "model_type_tests", "zone_metrics", "zone_tests", "shap_importance",
+                                        "shap_group_share", "shap_dependence", "calibration", "xg_match_results",
+                                        "xg_timeline", "xg_season_table", "xg_season_players", "xg_halves"), ".rds"))
+
+missing <- vapply(steps, \(files) !all(file.exists(here(files))), logical(1))
+missing["p1_import.qmd"] <- missing["p1_import.qmd"] || length(list.files(here("data", "raw_events"))) == 0 &&
+  missing["p2_data.qmd"] # raw events are only needed if p2 has to run
+
+if (any(missing)) {
+  for (f in names(steps)[which(missing)[1]:length(steps)]) {
+    message("Running ", f)
+    quarto::quarto_render(here("_pipeline", f), as_job = FALSE)
+  }
+}
+```
+
+# Abstract {.unnumbered}
+Expected goals (xG) models estimate the probability that a shot becomes a goal, but standard models describe only the shooter's location and a few event details, ignoring the positions of the goalkeeper and defenders (spatial features). This study investigated whether adding features derived from freeze-frame data, a snapshot of player positions at the moment of the shot, improves xG prediction. Using 62,037 open play shots from 2,651 men's matches in StatsBomb data, logistic regression and XGBoost models were trained on five feature sets, from literature baseline to a full set of 54 features, and evaluated on a held-out set of matches using Brier score, log loss, AUROC and PR-AUC. Adding seven standard freeze-frame features reduced the XGBoost Brier score from 0.0776 to 0.0737 (5%) and raised AUROC from 0.792 to 0.817. The full model reached a Brier score of 0.0728, slightly better than StatsBomb's of 0.0736, although further extended features added only a very small improvement. The benefit of spatial features was larger for shots inside the penalty box (5.5%) than outside (2.3%). Goalkeeper and defender features were the most influential, although goalkeeper distance partly reflects distance to goal. Freeze-frame features therefore give modest but consistent gains in xG accuracy, mainly in congested close-range situations.
+
+# Acknowledgements {.unnumbered}
+We would like to thank our supervisor, Neil Watson, for his guidance and feedback throughout this project. We are also grateful to our family and friends for their constant support and willingness to hear us talk about this project for the past 6 months!
+
+We sincerely appreciate StatsBomb for making their data publicly available, as this project would not have been possible without it. All data was sourced from StatsBomb Open Data (Hudl StatsBomb). It was accessed through their public GitHub repository as well as using the StatsBombR package.
+
+![](images/statsbomb-logo.png){width="40%" fig-align="left"}
+
+# Declaration of AI use {.unnumbered}
+In preparing this thesis we used various Claude (Anthropic) models between April and October 2026 as a support tool. It was used for the following purposes:
+
+-   Literature search: to suggest relevant literature and search directions. We also asked it to give us summaries of some of the papers before we went and read them. However, all sources cited were read and evaluated by us from the original publications.
+
+-   Coding support: to help diagnose and fix errors in our R code. Claude also helped with writing up the code for the EDA, and for enhancing plot clarity. The modelling, analysis and results were produced by us.
+
+-   To help setup and structure our project files for our Github Repository.
+
+-   Explanation: to explain some machine learning and football analytics concepts that we did not understand either from reading literature or just in general.
+
+-   Structure: to advise on how to organize the thesis and its sections.
+
+-   Language editing: to check and improve grammar and clarity in text we had written.
+
+AI was not used to generate any data, produce or interpret the results, or write the thesis on our behalf. All results come from analyses we ran. We reviewed all AI-assisted output, verified it where appropriate, and take full responsibility for the content of this thesis, including any errors.
+
+```{=latex}
+\tableofcontents
+\listoffigures
+\listoftables
+\clearpage
+\pagenumbering{arabic}
+```

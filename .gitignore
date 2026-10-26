@@ -1,0 +1,24 @@
+# R and RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Quarto output and caches (rebuilt every render)
+_book/
+.quarto/
+_freeze/
+*_files/
+*_cache/
+**/*.quarto_ipynb
+_pipeline/_output/
+_pipeline/.quarto/
+Rplots.pdf
+
+# StatsBomb data is never stored here: _pipeline/p1_import.qmd downloads it. outputs/ (small results) stays.
+data/
+
+/.quarto/
+
+# signed plagiarism declaration (signatures, student numbers): kept local, the title page skips it if missing
+images/plagiarism-declaration.pdf

@@ -1,0 +1,55 @@
+project:
+  type: book
+  output-dir: _book
+
+book:
+  title: "Spatially Enhanced xG: Does Freeze-Frame Context Improve Shot Outcome Prediction in Football?"
+  author:
+    - "Rejoice Mhuru"
+    - "Alan Hunter"
+  date: today
+  output-file: "xG-dissertation"
+  chapters:
+    - index.qmd
+    - 01-introduction.qmd
+    - 02-literature.qmd
+    - 03-eda.qmd
+    - 04-methods.qmd
+    - 05-results.qmd
+    - 06-discussion.qmd
+    - 07-conclusion.qmd
+    - references.qmd
+
+bibliography: references.bib
+csl: harvard-university-of-cape-town.csl
+link-citations: true
+
+format:
+  pdf:
+    template-partials:
+      - _tex/before-body.tex
+    colorlinks: true
+    linkcolor: black
+    citecolor: black
+    urlcolor: black
+    filecolor: black
+    classoption: [table]
+    tbl-pos: "H"
+    documentclass: scrreprt
+    pdf-engine: xelatex
+    toc: false # the table of contents is placed after the abstract, in index.qmd
+    number-sections: true
+    fig-pos: "H"
+    tbl-cap-location: top
+    geometry:
+      - margin=2.5cm
+    include-in-header:
+      text: |
+        \usepackage{float}
+        \usepackage{amssymb}
+        \usepackage{pdfpages}
+
+execute:
+  echo: false
+  warning: false
+  message: false

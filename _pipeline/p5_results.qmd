@@ -1,0 +1,372 @@
+---
+title: "p5 Results"
+---
+
+Turns the predictions from p4 into the numbers the book uses. Everything is saved in outputs/.
+
+```{r}
+#| include: false
+library(tidyverse)
+library(here)
+library(pROC)
+here::i_am("_pipeline/p5_results.qmd")
+
+preds <- readRDS(here("data", "predictions.rds"))
+shap <- readRDS(here("data", "shap.rds"))
+shots <- readRDS(here("data", "shots_model.rds"))
+feature_sets <- readRDS(here("outputs", "feature_sets.rds"))
+feature_groups <- readRDS(here("outputs", "feature_groups.rds"))
+model_order <- names(feature_sets) # std, std_ff, std_ctx, std_ctx_ff, full
+```
+
+# Metrics
+
+```{r}
+brier <- function(goal, pred) mean((pred - goal)^2)
+
+log_loss <- function(goal, pred) {
+  pred <- pmin(pmax(pred, 1e-6), 1 - 1e-6) # stops log(0)
+  -mean(goal * log(pred) + (1 - goal) * log(1 - pred))
+}
+
+auc_score <- function(goal, pred) {
+  as.numeric(auc(goal, pred, levels = c(0, 1), direction = "<", quiet = TRUE))
+}
+
+# area under the precision-recall curve, as average precision: go through the shots from highest
+# to lowest xG and average the precision at each goal. A model that knows nothing gets about the goal rate
+pr_auc_score <- function(goal, pred) {
+  goal <- goal[order(pred, decreasing = TRUE)]
+  precision <- cumsum(goal) / seq_along(goal)
+  mean(precision[goal == 1])
+}
+
+# goal rate in the training shots, the 'know nothing' model gives every shot this xG
+goal_rate <- mean(shots$goal[shots$id %in% preds$id[preds$set == "train"]])
+
+metrics <- preds |>
+  filter(!is.na(pred)) |>
+  group_by(set, model, tier) |>
+  summarise(shots = n(),
+            auc = auc_score(goal, pred),
+            pr_auc = pr_auc_score(goal, pred),
+            brier = brier(goal, pred),
+            bss = 1 - brier(goal, pred) / brier(goal, goal_rate), # = 1 - normalised Brier score
+            log_loss = log_loss(goal, pred),
+            .groups = "drop")
+
+saveRDS(metrics, here("outputs", "metrics.rds"))
+metrics |> filter(set == "test") |> arrange(brier)
+```
+
+# Classification metrics
+
+Call it a goal if the predicted xG is at or above the cut-off. Two cut-offs: 0.5, and the training goal rate.
+
+```{r}
+class_metrics <- function(goal, pred, cutoff) {
+  pred_goal <- pred >= cutoff
+  tp <- sum(pred_goal & goal == 1)
+  fp <- sum(pred_goal & goal == 0)
+  tn <- sum(!pred_goal & goal == 0)
+  fn <- sum(!pred_goal & goal == 1)
+
+  recall <- tp / (tp + fn)
+  specificity <- tn / (tn + fp)
+  precision <- if_else(tp + fp == 0, NA, tp / (tp + fp)) # NA if it never predicts a goal
+
+  tibble(accuracy = (tp + tn) / length(goal),
+         recall = recall,
+         specificity = specificity,
+         precision = precision,
+         balanced_accuracy = (recall + specificity) / 2,
+         f1 = 2 * precision * recall / (precision + recall))
+}
+
+class_results <- preds |>
+  filter(set == "test", !is.na(pred)) |>
+  cross_join(tibble(cutoff = c(0.5, goal_rate))) |>
+  group_by(model, tier, cutoff) |>
+  summarise(class_metrics(goal, pred, first(cutoff)), .groups = "drop")
+
+saveRDS(class_results, here("outputs", "class_metrics.rds"))
+```
+
+# Wilcoxon signed-rank tests
+
+Each shot's squared error is that shot's part of the Brier score. Two models predict the same test shots, so the errors are paired. Only shots every model has a prediction for.
+
+```{r}
+# one row per test shot, one column of squared errors per model
+errors <- preds |>
+  filter(set == "test") |>
+  mutate(name = if_else(model == "statsbomb", "statsbomb", paste(model, tier, sep = "_")),
+         sq_error = (pred - goal)^2) |>
+  select(id, name, sq_error) |>
+  pivot_wider(names_from = name, values_from = sq_error) |>
+  drop_na()
+
+compare_models <- function(data, new, old) {
+  tibble(new_model = new,
+         old_model = old,
+         brier_new = mean(data[[new]]),
+         brier_old = mean(data[[old]]),
+         improvement = brier_old - brier_new, # positive = the new model is better
+         p_value = wilcox.test(data[[new]], data[[old]], paired = TRUE)$p.value)
+}
+
+# each comparison adds feature groups to a smaller model
+comparisons <- tribble(
+  ~hypothesis,  ~new,         ~old,
+  "H1",         "std_ff",     "std",
+  "H1",         "std_ctx_ff", "std_ctx",
+  "H2",         "full",       "std_ctx_ff",
+  "Comparison", "full",       "std_ctx",
+  "Comparison", "std_ctx",    "std",
+  "Comparison", "std_ctx_ff", "std_ff")
+
+hypothesis_tests <- comparisons |>
+  cross_join(tibble(model = c("logistic", "xgboost"))) |>
+  pmap(\(hypothesis, new, old, model) {
+    compare_models(errors, paste(model, new, sep = "_"), paste(model, old, sep = "_")) |>
+      mutate(hypothesis = hypothesis, .before = 1)
+  }) |>
+  bind_rows()
+
+saveRDS(hypothesis_tests, here("outputs", "hypothesis_tests.rds"))
+
+# every model against StatsBomb's xG
+statsbomb_test <- setdiff(names(errors), c("id", "statsbomb")) |>
+  map(\(m) compare_models(errors, m, "statsbomb")) |>
+  bind_rows()
+
+saveRDS(statsbomb_test, here("outputs", "statsbomb_test.rds"))
+
+# XGBoost against logistic regression, one per feature set
+model_type_tests <- map(model_order, \(t) compare_models(errors, paste0("xgboost_", t), paste0("logistic_", t))) |>
+  bind_rows()
+
+saveRDS(model_type_tests, here("outputs", "model_type_tests.rds"))
+```
+
+# Inside vs outside the box (H3)
+
+Inside the box = x >= 102 and 18 <= y <= 62.
+
+```{r}
+box <- readRDS(here("data", "shots_final.rds")) |>
+  mutate(in_box = location.x >= 102 & location.y >= 18 & location.y <= 62) |>
+  select(id, in_box)
+
+errors <- errors |> left_join(box, by = "id")
+preds_zone <- preds |> filter(set == "test", !is.na(pred)) |> left_join(box, by = "id")
+
+# every metric for every model in each zone
+zone_metrics <- preds_zone |>
+  group_by(in_box, model, tier) |>
+  summarise(shots = n(),
+            auc = auc_score(goal, pred),
+            pr_auc = pr_auc_score(goal, pred),
+            brier = brier(goal, pred),
+            log_loss = log_loss(goal, pred),
+            .groups = "drop")
+
+saveRDS(zone_metrics, here("outputs", "zone_metrics.rds"))
+```
+
+For each shot, improvement = squared error without minus with the added features. A Wilcoxon rank-sum test checks whether the improvements differ inside and outside the box (two separate groups of shots, so not paired). The raw improvement is naturally bigger inside the box (bigger errors to start with), so the % of the Brier without the features is also given.
+
+```{r}
+compare_zones <- function(data, new, old) {
+  data$old_error <- data[[old]]
+  data$improvement <- data[[old]] - data[[new]]
+  result <- wilcox.test(improvement ~ in_box, data = data)
+
+  data |>
+    group_by(in_box) |>
+    summarise(shots = n(),
+              brier_old = mean(old_error),
+              brier_improvement = mean(improvement)) |>
+    mutate(pct_improvement = 100 * brier_improvement / brier_old,
+           new_model = new,
+           old_model = old,
+           p_value = result$p.value) # same p-value on both rows, it's inside vs outside
+}
+
+zone_tests <- tribble(
+  ~new,         ~old,
+  "std_ff",     "std",
+  "std_ctx_ff", "std_ctx",
+  "full",       "std_ctx") |>
+  cross_join(tibble(model = c("logistic", "xgboost"))) |>
+  pmap(\(new, old, model) compare_zones(errors, paste(model, new, sep = "_"), paste(model, old, sep = "_"))) |>
+  bind_rows()
+
+saveRDS(zone_tests, here("outputs", "zone_tests.rds"))
+zone_tests
+```
+
+# Feature importance
+
+Mean absolute SHAP value per feature for each XGBoost model, and each group's share of the total in M5.
+
+```{r}
+shap_importance <- shap |>
+  group_by(tier, feature) |>
+  summarise(mean_abs_shap = mean(abs(shap_value)), .groups = "drop") |>
+  mutate(group = case_when(
+    feature %in% feature_groups$standard ~ "Baseline",
+    feature %in% feature_groups$context ~ "Extended Baseline",
+    feature %in% feature_groups$ff_core ~ "Spatial",
+    feature %in% feature_groups$ff_extra ~ "Extended Spatial")) |>
+  arrange(tier, desc(mean_abs_shap))
+
+shap_group_share <- shap_importance |>
+  filter(tier == "full") |>
+  group_by(group) |>
+  summarise(features = n(), total_shap = sum(mean_abs_shap)) |>
+  mutate(pct_of_total = 100 * total_shap / sum(total_shap))
+
+saveRDS(shap_importance, here("outputs", "shap_importance.rds"))
+saveRDS(shap_group_share, here("outputs", "shap_group_share.rds"))
+```
+
+# SHAP against feature values
+
+Each test shot's SHAP value next to its feature value, for M2 and M5. Numeric features only.
+
+```{r}
+numeric_features <- shots |>
+  select(all_of(feature_sets$full)) |>
+  select(where(is.numeric)) |>
+  names()
+
+shap_dependence <- shap |>
+  filter(tier %in% c("std_ff", "full")) |>
+  inner_join(shots |>
+               select(id, all_of(numeric_features)) |>
+               pivot_longer(-id, names_to = "feature", values_to = "value"),
+             by = c("id", "feature")) |>
+  select(tier, feature, value, shap_value)
+
+saveRDS(shap_dependence, here("outputs", "shap_dependence.rds"))
+```
+
+# Calibration
+
+20 equal-sized groups of test shots per model (like Bajons & Harringer, 2025).
+
+```{r}
+calibration <- preds |>
+  filter(set == "test", !is.na(pred)) |>
+  group_by(model, tier) |>
+  mutate(bin = ntile(pred, 20)) |>
+  group_by(model, tier, bin) |>
+  summarise(mean_pred = mean(pred), goal_rate = mean(goal), .groups = "drop")
+
+saveRDS(calibration, here("outputs", "calibration.rds"))
+```
+
+# xG in practice
+
+Data for the "xG in practice" figures in Chapters 1 and 6. These use StatsBomb's own xG for every shot in the men's matches (not our models), because they only show what xG is and how it is used. Players get new random IDs so they can't be looked up in the open data.
+
+```{r}
+xg_shots <- readRDS(here("data", "shots_comp_info.rds")) |>
+  filter(competition_gender == "male", period < 5) |> # period 5 = penalty shootout
+  transmute(match_id, team.id, team.name, player.id, position.name, minute,
+            xg = shot.statsbomb_xg, goal = as.integer(shot.outcome.name == "Goal"))
+
+load(here("data", "Comp_Match_Data.RData")) # Comp and Matches
+
+real_results <- Matches |>
+  filter(match_id %in% xg_shots$match_id) |>
+  select(match_id, match_date, comp = competition.competition_name, season = season.season_name,
+         home = home_team.home_team_name, away = away_team.away_team_name,
+         home_id = home_team.home_team_id, away_id = away_team.away_team_id, home_score, away_score)
+
+match_team_xg <- xg_shots |>
+  group_by(match_id, team.id) |>
+  summarise(xg = sum(xg), .groups = "drop")
+
+# one row per team per match: their xG, xG against, real goals for and against
+xg_match_results <- bind_rows(
+  real_results |> transmute(match_id, match_date, comp, season, team = home, opponent = away,
+                            team_id = home_id, opponent_id = away_id, goals = home_score, conceded = away_score),
+  real_results |> transmute(match_id, match_date, comp, season, team = away, opponent = home,
+                            team_id = away_id, opponent_id = home_id, goals = away_score, conceded = home_score)) |>
+  left_join(match_team_xg, by = c("match_id", "team_id" = "team.id")) |>
+  left_join(rename(match_team_xg, xgc = xg), by = c("match_id", "opponent_id" = "team.id")) |>
+  mutate(xg = replace_na(xg, 0), xgc = replace_na(xgc, 0),
+         xg_diff = xg - xgc, goal_diff = goals - conceded,
+         result = factor(case_when(goal_diff > 0 ~ "Win", goal_diff == 0 ~ "Draw", TRUE ~ "Loss"),
+                         levels = c("Loss", "Draw", "Win")))
+
+# one match shot by shot: Chelsea 2-2 Tottenham, Premier League 2015/16
+example <- xg_match_results |>
+  filter(comp == "Premier League", season == "2015/2016", team == "Chelsea", opponent == "Tottenham Hotspur")
+xg_timeline <- xg_shots |>
+  filter(match_id == example$match_id) |>
+  select(team.name, minute, xg, goal) |>
+  bind_rows(tibble(team.name = c("Chelsea", "Tottenham Hotspur"), minute = 0, xg = 0, goal = 0),
+            tibble(team.name = c("Chelsea", "Tottenham Hotspur"), minute = 95, xg = 0, goal = 0)) |>
+  arrange(minute) |>
+  group_by(team.name) |>
+  mutate(cum_xg = cumsum(xg)) |>
+  ungroup()
+
+# Premier League 2015/16 expected points: each shot scores with probability = its xG
+goal_probs <- function(p) { # chance of 0, 1, 2, ... goals from a set of shots
+  d <- 1
+  for (x in p) d <- c(d * (1 - x), 0) + c(0, d * x)
+  d
+}
+season_matches <- real_results |> filter(comp == "Premier League", season == "2015/2016")
+season_shots <- xg_shots |> filter(match_id %in% season_matches$match_id)
+match_xpts <- season_matches |>
+  rowwise() |>
+  mutate(home_p = list(season_shots$xg[season_shots$match_id == match_id & season_shots$team.id == home_id]),
+         away_p = list(season_shots$xg[season_shots$match_id == match_id & season_shots$team.id == away_id]),
+         grid = list(outer(goal_probs(home_p), goal_probs(away_p))), # rows = home goals, columns = away goals
+         p_home = sum(grid[lower.tri(grid)]), p_draw = sum(diag(grid)), p_away = sum(grid[upper.tri(grid)])) |>
+  ungroup() |>
+  mutate(home_xpts = 3 * p_home + p_draw, away_xpts = 3 * p_away + p_draw,
+         home_pts = case_when(home_score > away_score ~ 3, home_score == away_score ~ 1, TRUE ~ 0),
+         away_pts = case_when(away_score > home_score ~ 3, home_score == away_score ~ 1, TRUE ~ 0))
+xg_season_table <- bind_rows(
+  match_xpts |> transmute(team = home, pts = home_pts, xpts = home_xpts, gd = home_score - away_score),
+  match_xpts |> transmute(team = away, pts = away_pts, xpts = away_xpts, gd = away_score - home_score)) |>
+  group_by(team) |>
+  summarise(pts = sum(pts), xpts = sum(xpts), gd = sum(gd)) |>
+  arrange(desc(pts), desc(gd))
+
+# players in the same season with 20+ shots, new random IDs (StatsBomb's player IDs are dropped)
+xg_season_players <- season_shots |>
+  group_by(player.id) |>
+  summarise(position = names(which.max(table(position.name))),
+            shots = n(), goals = sum(goal), xg = sum(xg), .groups = "drop") |>
+  filter(shots >= 20) |>
+  mutate(anon_id = withr::with_seed(2026, sample(n())),
+         diff = goals - xg,
+         role = case_when(str_detect(position, "Back|Goalkeeper") ~ "Defender",
+                          str_detect(position, "Midfield") ~ "Midfielder",
+                          TRUE ~ "Attacker"),
+         role = factor(role, levels = c("Defender", "Midfielder", "Attacker"))) |>
+  select(-player.id)
+
+# first half of the season against the second half, three leagues with every 2015/16 match
+xg_halves <- xg_match_results |>
+  filter(season == "2015/2016", comp %in% c("Premier League", "La Liga", "Serie A")) |>
+  group_by(comp, team) |>
+  arrange(match_date, .by_group = TRUE) |>
+  mutate(half = if_else(row_number() <= n() / 2, "first", "second")) |>
+  group_by(comp, team, half) |>
+  summarise(gd = sum(goal_diff), xgd = sum(xg_diff), .groups = "drop") |>
+  pivot_wider(names_from = half, values_from = c(gd, xgd))
+
+saveRDS(xg_match_results, here("outputs", "xg_match_results.rds"))
+saveRDS(xg_timeline, here("outputs", "xg_timeline.rds"))
+saveRDS(xg_season_table, here("outputs", "xg_season_table.rds"))
+saveRDS(xg_season_players, here("outputs", "xg_season_players.rds"))
+saveRDS(xg_halves, here("outputs", "xg_halves.rds"))
+```

@@ -1,0 +1,443 @@
+# Exploratory Data Analysis
+
+```{r}
+#| include: false
+source(here::here("_common.R"))
+shots_raw <- dat("shots_comp_info")                              # every shot extracted
+shots_all <- shots_raw |> filter(competition_gender == "male")   # men's, penalties still in
+shots_cleaned <- dat("shots_cleaned")                            # men's, no penalties
+shots_model <- dat("shots_model")                                # final modelling sample
+shots <- dat("shots_final") |> filter(id %in% shots_model$id)    # same shots, all columns
+density_breaks <- seq(0.1, 1, by = 0.1)
+```
+
+## Data Overview
+
+The dataset used in this project consists of all shot events sourced from StatsBomb via the StatsBomb R package [@yam2026]. StatsBomb provides detailed event-level data for professional football matches, including shot location, expected goals (xG), and freeze-frame data capturing player positions at the moment of each event.
+
+@tbl-data-overview summarises the data available via StatsBomb:
+
+```{r}
+#| label: tbl-data-overview
+#| tbl-cap: "Shots, matches and competitions in the StatsBomb open data, by gender"
+shots_raw |>
+  group_by(Gender = competition_gender) |>
+  summarise(Shots = n(), Matches = n_distinct(match_id), Competitions = n_distinct(competition_name)) |>
+  kable_tbl(format.args = list(big.mark = ","))
+```
+
+For this project, we extracted all the shot events from the 17 male competitions spanning across domestic leagues, continental tournaments, and international competitions. The specific competitions used are the Premier League, La Liga, Serie A, Ligue 1, Bundesliga, Indian Super League, UEFA Europa League, Champions League, UEFA Euro, North American League, Major League Soccer, Liga Profesional, Copa del Rey, Copa America, African Cup of Nations, FIFA U20 World Cup, and the FIFA World Cup. The competitions span from 1958 to 2024. @tbl-competitions below breaks down the number of shots from each competition and what years they took place:
+
+```{r}
+#| label: tbl-competitions
+#| tbl-cap: "Men's competitions used: years covered, seasons, matches and shots"
+shots_all |>
+  mutate(season = as.integer(str_sub(season_name, 1, 4))) |>
+  group_by(Competition = competition_name) |>
+  summarise(first = min(season), last = max(season), Seasons = n_distinct(season_name),
+            Matches = n_distinct(match_id), Shots = n()) |>
+  mutate(Years = if_else(first == last, as.character(first), paste0(first, "-", last))) |>
+  arrange(desc(Shots)) |>
+  select(Competition, Years, Seasons, Matches, Shots) |>
+  kable_tbl(format.args = list(big.mark = ","))
+```
+
+@fig-competition-seasons below gives a visual representation of the above table, which shows that the competition with the most matches in our sample is La Liga in Spain, and most matches are in the year 2015, which has more matches than any other year:
+
+```{r}
+#| label: fig-competition-seasons
+#| fig-cap: "Number of matches per competition and season, men's competitions"
+#| fig-height: 4.6
+shots_all |>
+  mutate(season = as.integer(str_sub(season_name, 1, 4))) |>
+  group_by(competition_name, season) |>
+  summarise(matches = n_distinct(match_id), .groups = "drop") |>
+  ggplot(aes(x = season, y = fct_reorder(competition_name, season, .fun = min), fill = matches)) +
+  geom_tile(colour = "white", width = 1, height = 0.9) +
+  scale_fill_viridis_c(option = "viridis", begin = 0, end = 0.85, trans = "log10", direction = -1,
+                       breaks = c(1, 3, 10, 30, 100), name = "Matches") +
+  scale_x_continuous(breaks = seq(1960, 2020, by = 10)) +
+  labs(x = "Season (start year)", y = NULL) +
+  theme_grey(base_size = 12) + # grey background, white grid lines
+  theme(legend.position = "bottom", legend.key.width = unit(1.5, "cm"))
+```
+
+Interestingly, the champions league spans many years, but only has one match per year. In addition, only 35 of the total 2651 take place before the year 2003. The matches come from a domestic leagues, continental leagues, and international matches, and are divided as shown in @tbl-competition-level:
+
+```{r}
+#| label: tbl-competition-level
+#| tbl-cap: "Matches and shots by competition level"
+continental <- c("Champions League", "UEFA Europa League")
+international <- c("FIFA World Cup", "UEFA Euro", "African Cup of Nations", "Copa America", "FIFA U20 World Cup")
+shots_all |>
+  mutate(Level = case_when(competition_name %in% continental ~ "Continental club",
+                           competition_name %in% international ~ "International",
+                           TRUE ~ "Domestic club")) |>
+  group_by(Level) |>
+  summarise(Matches = n_distinct(match_id), Shots = n()) |>
+  mutate(`% of matches` = 100 * Matches / sum(Matches), `% of shots` = 100 * Shots / sum(Shots)) |>
+  arrange(desc(Matches)) |>
+  select(Level, Matches, `% of matches`, Shots, `% of shots`) |>
+  kable_tbl(digits = 1, format.args = list(big.mark = ","))
+```
+
+## Data cleaning and filtering
+
+Shots come from four different situations, as shown in @tbl-shot-type-counts below:
+
+```{r}
+#| label: tbl-shot-type-counts
+#| tbl-cap: "Shots by shot type, men's competitions including penalties"
+shots_all |>
+  count(`Shot type` = shot.type.name, name = "Shots", sort = TRUE) |>
+  mutate(`% of shots` = 100 * Shots / sum(Shots)) |>
+  kable_tbl(digits = 2, format.args = list(big.mark = ","))
+```
+
+The vast majority of shots come from open play, over 93% of them. @fig-shot-types-all below makes it clear just how different the representation of these different shot types are in the data:
+
+```{r}
+#| label: fig-shot-types-all
+#| fig-cap: "Shots by shot type, men's competitions including penalties"
+shots_all |>
+  count(shot.type.name) |>
+  ggplot(aes(x = n, y = reorder(shot.type.name, n))) +
+  geom_col(fill = "steelblue") +
+  scale_x_continuous(labels = scales::comma) +
+  labs(x = "Shots", y = NULL)
+```
+
+### Handling penalty kicks
+
+As discussed in section 1.3, penalty kicks are normally excluded from xG modelling because their outcome is far more predictable than an open-play shot and is not meaningfully affected by defender or goalkeeper positioning, the spatial features this project is primarily concerned with. We have excluded penalties from our sample set.
+
+### Handling corner kicks
+
+Shots from corner kicks are rare events that are also not meaningfully affected by defender or goalkeeper positioning. The samples in the dataset are most likely biased, and are only recorded as shots when a corner accidentally goes toward the goal. This is shown in @tbl-corners below:
+
+```{r}
+#| label: tbl-corners
+#| tbl-cap: "Shots taken directly from corners compared with all other shots"
+shots_cleaned |>
+  mutate(`Shot type` = if_else(shot.type.name == "Corner", "Direct corner", "All other shots")) |>
+  group_by(`Shot type`) |>
+  summarise(Shots = n(), Goals = sum(goal), `Conversion rate` = mean(goal),
+            `Mean StatsBomb xG` = mean(shot.statsbomb_xg, na.rm = TRUE)) |>
+  kable_tbl(digits = 3, format.args = list(big.mark = ","))
+```
+
+Of the 19 shots, only one of them was off target, further demonstrating the sampling bias:
+
+```{r}
+#| label: tbl-corner-outcomes
+#| tbl-cap: "Outcomes of shots taken directly from corners"
+shots_cleaned |>
+  filter(shot.type.name == "Corner") |>
+  count(Outcome = shot.outcome.name, name = "Shots", sort = TRUE) |>
+  kable_tbl()
+```
+
+When you compare the distribution of shots on target, hitting the post, or off target, to other types of shots, as shown in @fig-outcomes-by-type below, we see that corners appear to only be off target the same amount of the time as penalties, which is highly unlikely to be the case:
+
+```{r}
+#| label: fig-outcomes-by-type
+#| fig-cap: "Shot outcome by shot type"
+shots_all |>
+  mutate(Outcome = case_when(shot.outcome.name %in% c("Goal", "Saved", "Saved to Post") ~ "On target",
+                             shot.outcome.name == "Post" ~ "Post",
+                             shot.outcome.name == "Blocked" ~ "Blocked",
+                             TRUE ~ "Off target"),
+         Outcome = factor(Outcome, levels = c("On target", "Post", "Off target", "Blocked"))) |>
+  group_by(shot.type.name) |>
+  mutate(type = paste0(shot.type.name, "\n(n = ", scales::comma(n()), ")")) |>
+  ungroup() |>
+  count(type, Outcome) |>
+  group_by(type) |>
+  mutate(pct = n / sum(n)) |>
+  ungroup() |>
+  ggplot(aes(x = pct, y = fct_rev(type), fill = fct_rev(Outcome))) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = if_else(pct >= 0.05, scales::percent(pct, accuracy = 1), "")),
+            position = position_stack(vjust = 0.5), colour = "white", size = 4) +
+  scale_x_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c(`On target` = "#1f3a5f", Post = "#5b8db8", `Off target` = "#c45a00", Blocked = "grey60"),
+                    breaks = c("On target", "Post", "Off target", "Blocked")) +
+  labs(x = "Share of shots", y = NULL, fill = NULL) +
+  theme(panel.grid.major.y = element_blank())
+```
+
+In addition, the small number of samples means removing shots from corners will not cause any sample size issues and thus are also removed from the sample set.
+
+### Handling direct free kicks
+
+```{r}
+#| label: tbl-free-kicks
+#| tbl-cap: "Direct free kicks compared with open play shots"
+shots_cleaned |>
+  filter(shot.type.name %in% c("Open Play", "Free Kick")) |>
+  mutate(`Shot type` = if_else(shot.type.name == "Free Kick", "Direct free kick", "Open play")) |>
+  group_by(`Shot type`) |>
+  summarise(Shots = n(), Goals = sum(goal), `Conversion rate` = mean(goal),
+            `Mean StatsBomb xG` = mean(shot.statsbomb_xg, na.rm = TRUE)) |>
+  arrange(desc(Shots)) |>
+  kable_tbl(digits = 3, format.args = list(big.mark = ","))
+```
+
+Similar to corners, free kicks are set-piece situations in which defender and goalkeeper positioning does not influence the shot in the same way as in open play. The shooter faces no immediate pressure from opposing players, so these shots were also excluded from the sample set.
+
+### Other sample removals
+
+In the StatsBomb data, there is a variable called off_cam, which indicates when a shot took place off camera. In these cases, player positions are estimated to make the freeze frame location data at the time the shot is taken. As the spatial features are the focus of this report, the differences between the estimates and the actual positions may affect modelling accuracy.
+
+In addition, there are shots in the data that do not include any information about the goalkeeper's location. The goalkeeper location is very important when looking at spatial context, and a few features will use this information. The missing data cannot be estimated either.
+
+In both the above cases, when we plot the shot locations, there doesn't appear to be any specific situation or location that these problematic sample shots occur, as shown in @fig-other-removals below:
+
+```{r}
+#| label: fig-other-removals
+#| fig-cap: "Locations of shots taken off camera or with no goalkeeper in the freeze frame"
+#| fig-height: 3.5
+removed <- shots_cleaned |>
+  filter(shot.type.name == "Open Play") |>
+  mutate(Group = case_when(off_cam ~ "Off camera",
+                           is.na(location.x.GK) ~ "No goalkeeper",
+                           TRUE ~ "Remaining"),
+         Group = factor(Group, levels = c("Off camera", "No goalkeeper", "Remaining")))
+
+removed |>
+  filter(Group != "Remaining") |>
+  ggplot() +
+  annotate_pitch(dimensions = pitch_statsbomb, fill = "springgreen4", colour = "white") +
+  geom_point(aes(x = location.x, y = location.y, colour = goal), size = 2) +
+  scale_colour_manual(values = c(`TRUE` = "gold", `FALSE` = "red"),
+                      labels = c(`TRUE` = "Goal", `FALSE` = "No goal"), name = NULL) +
+  facet_wrap(~ Group) +
+  theme_pitch() +
+  theme(legend.position = "bottom", strip.text = element_text(size = 13, face = "bold"),
+        legend.text = element_text(size = 13))
+```
+
+The number of these problematic samples relative to the total number of shots is very small, as shown in @tbl-other-removals below:
+
+```{r}
+#| label: tbl-other-removals
+#| tbl-cap: "Shots taken off camera or with no goalkeeper, compared with the remaining shots"
+removed |>
+  group_by(Group) |>
+  summarise(Shots = n(), `Conversion rate %` = round(mean(goal) * 100, 2)) |>
+  kable_tbl(format.args = list(big.mark = ","))
+```
+
+The only concern is that there is clearly a higher percentage of shots scored when there is no goalkeeper location recorded. This may be due to the kind of situations such as late set-pieces when the goalkeeper has gone up for a corner or free kick or when a keeper is sent off due to committing a foul. However, we cannot be sure of this.
+
+So, as the spatial features are the focus of this report, all samples using estimated spatial data are excluded from the sample set.
+
+
+
+```{r}
+#| label: tbl-missing-features
+#| tbl-cap: "Shots dropped for a missing feature, compared with the remaining shots"
+dat("shots_final") |>
+  mutate(Group = if_else(id %in% shots_model$id, "Remaining", "Dropped (missing a feature)")) |>
+  group_by(Group) |>
+  summarise(Shots = n(), Goals = sum(goal), `Conversion rate` = mean(goal)) |>
+  arrange(Shots) |>
+  rename(` ` = Group) |>
+  kable_tbl(digits = 3, format.args = list(big.mark = ","))
+```
+
+Shots with missing features are removed from the sample set as most models cannot use incomplete rows. Excluding these shots keep the dataset consistent, so every shot is described by the same complete set of features. The number of these shots are also small relative to the total number of shots.
+
+### Final dataset
+
+@tbl-cleaning-steps below shows how many shots were removed at each cleaning step, and the final dataset is shown in @tbl-final-sample.
+
+```{=latex}
+\begingroup\rowcolors{2}{gray!8}{white}
+```
+
+| Step | Shots left | Removed |
+|----------------------------------|------------|------------|
+| All shots extracted | 101,227 | -- |
+| Men's competitions only | 66,854 | 34,373 |
+| Remove penalties | 65,822 | 1,032 |
+| Remove direct free kicks | 62,298 | 3,524 |
+| Remove direct corners | 62,279 | 19 |
+| Remove off-camera shots | 62,214 | 65 |
+| Remove shots with no goalkeeper | 62,156 | 58 |
+| Remove shots with missing features | 62,037 | 119 |
+
+: Shots removed at each cleaning step {#tbl-cleaning-steps}
+
+```{=latex}
+\endgroup
+```
+
+```{r}
+#| label: tbl-final-sample
+#| tbl-cap: "The final modelling sample"
+tibble(Shots = nrow(shots_model), Matches = n_distinct(shots_model$match_id),
+       Goals = sum(shots_model$goal), `Conversion rate` = mean(shots_model$goal)) |>
+  kable_tbl(digits = 3, format.args = list(big.mark = ","))
+```
+
+## Target variable: shot outcome
+
+Our target variable is the outcome of the shot: whether it resulted in a goal (1) or not (0). This is a binary classification target.
+
+@fig-class-balance shows the class balance of this target across the full sample. Goals make up only 10.2% of all shots, with the remaining 89.8% failing to score. This is a substantial class imbalance that several xG studies address directly, for example through under-sampling during cross validation [@bandara2024]. This is an important consideration for both model evaluation and potentially, model training.
+
+```{r}
+#| label: fig-class-balance
+#| fig-cap: "Number of shots and goals in the full sample and in the training and test sets (split by match)."
+#| fig-scap: "Number of shots and goals in the full sample and in the training and test sets (split by match)"
+split_counts <- shots_model |>
+  select(match_id, goal) |>
+  left_join(out("match_split"), by = "match_id") |>
+  mutate(set = if_else(set == "train", "Training", "Test")) |>
+  bind_rows(mutate(select(shots_model, goal), set = "Overall")) |>
+  mutate(set = factor(set, levels = c("Overall", "Training", "Test")),
+         outcome = factor(if_else(goal == 1, "Goal", "No goal"), levels = c("No goal", "Goal"))) |>
+  count(set, outcome)
+split_labels <- split_counts |>
+  group_by(set) |>
+  summarise(total = sum(n), goals = n[outcome == "Goal"], rate = goals / total) |>
+  mutate(label = paste0(scales::comma(total), " shots\n", scales::comma(goals), " goals (",
+                        scales::percent(rate, accuracy = 0.1), ")"))
+ggplot(split_counts, aes(set, n, fill = outcome)) +
+  geom_col(width = 0.6) +
+  geom_text(data = split_labels, aes(set, total, label = label), inherit.aes = FALSE, vjust = -0.2, size = 4) +
+  scale_fill_manual(values = c(`No goal` = "grey75", Goal = "#0072B2"), name = NULL) +
+  scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.2))) +
+  theme(panel.grid.major.x = element_blank()) +
+  labs(x = NULL, y = "Shots")
+```
+
+## Shot characteristics
+
+### Shot type
+
+@fig-shot-types shows the distribution of shot types across the full dataset. Open play accounts for majority of the shots, at roughly 62 000 out of a total of 65 765, then free kicks (3 518) and penalties (1 031), while direct shots from corners are effectively negligible (19). This matches the pattern reported throughout literature, where open play is treated as the default shot situation and free kicks, corners and penalties are modelled as distinct, comparatively rare match contexts [@anzer2021; @mead2023].
+
+```{r}
+#| label: fig-shot-types
+#| fig-cap: "Distribution of shot types across the full shot sample, including penalties"
+shots_all |>
+  count(shot.type.name) |>
+  ggplot(aes(x = n, y = reorder(shot.type.name, n))) +
+  geom_col(fill = "steelblue") +
+  scale_x_continuous(labels = scales::comma) +
+  labs(x = "Shots", y = NULL)
+```
+
+Removing penalties from this picture, as shown in @fig-shot-types-no-pen, barely changes the overall story since they were already such a small proportion of shots. Open play remains completely dominant and free kicks remain a distant second. What this comparison confirms is that once penalties are dropped, every remaining shot in the dataset is a genuine attempt at goal under some degree of defensive pressure, which is the population this project's freeze frame features are meant to describe.
+
+```{r}
+#| label: fig-shot-types-no-pen
+#| fig-cap: "Distribution of shot types with penalties excluded"
+shots_cleaned |>
+  count(shot.type.name) |>
+  ggplot(aes(x = n, y = reorder(shot.type.name, n))) +
+  geom_col(fill = "steelblue") +
+  scale_x_continuous(labels = scales::comma) +
+  labs(x = "Shots", y = NULL)
+```
+
+### Body part
+
+@fig-body-part shows the body part used for each shot, with penalties already excluded so that the use of a preferred foot for penalties does not distort the picture of open play shooting behaviour. The right foot is used for the largest share of shots, followed by the left foot and the head, with all other body parts accounting for a negligible remainder. This split between the right foot over the left is consistent with the general prevalence of right-footed players. Headers form a clearly smaller but still substantial category, which is worth bearing in mind given that several studies note that headed shots convert at a noticeably lower rate than shots taken with the foot.
+
+```{r}
+#| label: fig-body-part
+#| fig-cap: "Distribution of body part used for shots, with penalties excluded"
+shots_cleaned |>
+  count(shot.body_part.name) |>
+  ggplot(aes(x = n, y = reorder(shot.body_part.name, n))) +
+  geom_col(fill = "steelblue") +
+  scale_x_continuous(labels = scales::comma) +
+  labs(x = "Shots", y = NULL)
+```
+
+## Spatial distribution of shots
+
+### Overall shot location density
+
+@fig-shot-density shows a kernel density estimate of shot location across the pitch, with all shots standardised to attack in the same direction. The estimated density is a continuous surface, displayed here as discrete contour bands (each representing a fraction of the maximum density) to aid interpretation. As expected, shot density is heavily concentrated inside and immediately around the penalty box, with the single densest region sitting just in front of goal, becoming thinner as it moves away from goal and almost disappearing beyond the edge of the box. This pattern is exactly what motivates distance and angle to goal as the two dominant predictors identified throughout Chapter 2 of this project [@anzer2021], since the majority of shooting opportunities are concentrated in a fairly small area where small differences in position could plausibly have a large effect on scoring probability.
+
+```{r}
+#| label: fig-shot-density
+#| fig-cap: "Shot location density"
+ggplot(shots) +
+  annotate_pitch(dimensions = pitch_statsbomb, fill = "springgreen4", colour = "white") +
+  geom_density_2d_filled(aes(x = location.x, y = location.y),
+                         alpha = 0.7, contour_var = "ndensity", breaks = density_breaks) +
+  scale_fill_viridis_d(option = "plasma", direction = -1, name = "Relative density") +
+  theme_pitch() +
+  theme(legend.position = "right")
+```
+
+### Shot location by outcome
+
+Splitting shot location density by outcome makes the relationship between position and scoring probability more concrete.
+
+```{r}
+#| label: fig-shot-density-goal
+#| fig-cap: "Shot location density, goals compared with shots that did not score"
+#| fig-height: 3.2
+ggplot(shots) +
+  annotate_pitch(dimensions = pitch_statsbomb, fill = "springgreen4", colour = "white") +
+  geom_density_2d_filled(aes(x = location.x, y = location.y),
+                         alpha = 0.7, contour_var = "ndensity", breaks = density_breaks) +
+  scale_fill_viridis_d(option = "plasma", direction = -1, name = "Relative density") +
+  facet_wrap(~ goal, labeller = labeller(goal = c(`TRUE` = "Goal", `FALSE` = "No goal"))) +
+  theme_pitch() +
+  theme(legend.position = "right")
+```
+
+The density of goals sits noticeably tighter and closer to goal than the density of shots that did not score, which spreads out considerably further towards the edge of the box and beyond. Non-scoring shots are taken from a much wider range of positions, including many low-probability attempts from distance, while goals are overly clustered in the small area directly in front of the six-yard box.
+
+## Freeze frame and defender-position features
+
+The StatsBomb data includes freeze frames at the time of every shot event (except for penalties). These freeze frames capture the position of each relevant player, including the shooter, their attacking teammates, the defending players, and the goalkeeper. Players not involved in the play are not included. From this player location information, it is possible to design a variety of spatial features, which will be discussed in the methodology section below. Features derived using freeze-frame context are referred to as spatial features, whereas those that only use event information and no freeze-frame context are referred to as baseline, or non-spatial features, as shown in @tbl-feature-groups in @sec-feature-sets.
+
+@fig-freeze-frame below shows an example of the information contained in the freeze-frame data for a single shot.
+
+```{r}
+#| label: fig-freeze-frame
+#| fig-cap: "Freeze frame for one shot in the data (a header from a corner, 7.1 yards from goal, which was blocked). Left: what the baseline features know about the shot. Right: every player position recorded in the freeze frame. The shaded triangle joins the shot location to the two goalposts."
+#| fig-scap: "Freeze frame for one shot in the data (a header from a corner, 7.1 yards from goal, which was blocked)"
+#| fig-height: 4
+example <- shots |>
+  filter(DefendersInCone == 2, DistToGoal < 15, location.y > 30, location.y < 50) |>
+  slice(1)
+panels <- c("Standard features", "With freeze frame")
+players <- example |>
+  select(shot.freeze_frame) |>
+  unnest(shot.freeze_frame) |>
+  mutate(x = map_dbl(location, 1), y = map_dbl(location, 2),
+         who = case_when(teammate ~ "Teammate", position.name == "Goalkeeper" ~ "Goalkeeper", TRUE ~ "Defender"),
+         panel = factor("With freeze frame", levels = panels)) |>
+  select(x, y, who, panel)
+shooter <- tibble(x = example$location.x, y = example$location.y, who = "Shooter",
+                  panel = factor(panels, levels = panels))
+all_players <- bind_rows(players, shooter) |>
+  mutate(who = factor(who, levels = c("Shooter", "Teammate", "Defender", "Goalkeeper")))
+triangle <- tibble(x = c(example$location.x, 120, 120), y = c(example$location.y, 36, 44)) |>
+  cross_join(tibble(panel = factor(panels, levels = panels)))
+ggplot() +
+  annotate_pitch(dimensions = pitch_statsbomb, fill = "springgreen4", colour = "white") +
+  geom_polygon(data = triangle, aes(x = x, y = y, group = panel), fill = "white", alpha = 0.3) +
+  geom_point(data = all_players, aes(x = x, y = y, fill = who, size = who), shape = 21, colour = "black") +
+  scale_fill_manual(values = c(Shooter = "gold", Teammate = "deepskyblue", Defender = "red", Goalkeeper = "orange"),
+                    name = NULL, drop = FALSE) +
+  scale_size_manual(values = c(Shooter = 4.5, Teammate = 3, Defender = 3, Goalkeeper = 3), name = NULL, drop = FALSE) +
+  facet_wrap(~ panel, drop = FALSE) +
+  coord_fixed(xlim = c(85, 121), ylim = c(15, 65)) +
+  theme_pitch() +
+  theme(legend.position = "bottom", strip.text = element_text(size = 13, face = "bold"),
+        legend.text = element_text(size = 13))
+```
+
+## Summary of key EDA findings
+
+The exploratory analysis in this chapter confirms several patterns that motivate the modelling choices made later in this thesis. Shots are dominated by open play, with free kicks, corners and especially penalties forming small, distinct categories that are conventionally modelled separately or excluded outright. The right foot is used most often, consistent with general footedness patterns, while headers form a smaller category. Spatially, shots are heavily concentrated close to goal, and this concentration is noticeably tighter for shots that result in a goal than for those that do not, reinforcing distance and angle to goal as the natural baseline. The target variable is substantially imbalanced, with only 10.2% of shots resulting in a goal, which shapes the choice of evaluation metrics used throughout the study.

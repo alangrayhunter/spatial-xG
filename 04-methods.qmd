@@ -1,0 +1,789 @@
+# Methodology
+
+```{r}
+#| include: false
+source(here::here("_common.R"))
+```
+
+## Models
+
+### Logistic Regression Model
+
+Logistic Regression is a generalized linear model (GLM) most widely used as a baseline in expected goals (xG) modelling [@hosmer2000; @james2021]. It is a supervised learning algorithm for binary classification. Binary classification categorizes observations into one of two classes, 1 or 0, or in our case goal or no goal. It models the probability that an observation belongs to a particular class by applying the sigmoid function to a linear combination of input features, constraining output predictions to the range \[0, 1\]. We let $y_{i} \in \ \left\{ 0,\ 1 \right\}$ denote whether shot $i$ resulted in a goal ($y_{i} = 1$) or not ($y_{i} = 0$), and let $x_{i1},\ x_{i2},\ \ldots,\ x_{ip}$ denote the $p$ features describing shot $i$. The outcome is assumed to follow a Bernoulli distribution, $y_{i}\ \sim\ Bernoulli(p_{i})$, and $p_{i} = P\left( y_{i} = 1\  \right|\ x_{i1},\ \ldots,\ x_{ip}),$ where $p_{i}$ is the xG value of the shot. A linear regression on a binary outcome could produce fitted values outside \[0, 1\]. Logistic regression avoids this by modelling a transformation of $p_{i}$, the log-odds (or logit), as a linear function of the features [@james2021]:
+
+$$\log\left( \frac{p_{i}}{1 - \ p_{i}} \right) = \ \beta_{0} + \ \beta_{1}x_{i1} + \ \beta_{2}x_{i2} + \ldots + \ \beta_{p}x_{ip}$$
+
+Equivalently, inverting the logit gives the predicted probability through the sigmoid (logistic) function:
+
+$$p_{i} = \ \frac{1}{(1 + \ e^{- \left( \beta_{0} + \ \beta_{1}x_{i1}\  + \ldots + \ \beta_{p}x_{ip} \right)})}$$
+
+The sigmoid maps any real-valued linear predictor onto (0, 1), so every fitted xG value is a valid probability. It is S-shaped, so the same change in a feature has a larger effect on the probability when $p_{i}$ is near 0,5 than when it is near 0 or 1. This suits xG where most shots have a low probability of scoring and fewer shots have a high probability of scoring.
+
+These coefficients are interpreted on the odds scale [@hosmer2000]. The odds of a goal are $\frac{p_{i}}{(1 - \ p_{i})}$ . Holding all other features constant, a one unit increase in $x_{ij}$ changes the log-odds by $\beta_{j}$ and therefore multiplies the odds by $e^{\beta_{j}}$. For example, if $x_{ij}$ is shot distance in yards (see section 4.4.1 for units of measurements) and $\beta_{j} = \  - 0.10$, each additional metre multiples the odds of scoring by $e^{- 0.10}\  \approx 0.90$, a reduction of about 10%. The intercept $\beta_{0}$ is the log-odds of a goal when all features are equal to zero. The effect on the probability itself is not constant, because it depends on the values of all the other features.
+
+Before fitting a model, logistic regression makes the following assumptions [@hosmer2000]:
+
+1.  The response variable must be binary, with each $y_{i}$ following a Bernoulli distribution conditional on its features. A shot is either a goal or not a goal, so this holds by construction.
+
+2.  The observations are independent. The outcomes are assumed to be conditionally independent given the features. This is an assumption most likely to be violated in football data. Shots from the same match share team strength, tactics and conditions, and shots by the same player share finishing ability. The point estimates may remain reasonable, but standard errors and confidence intervals can be too narrow.
+
+3.  There is no multicollinearity among explanatory variables. Highly correlated features can make the coefficient estimates unstable and inflate their standard errors. Predictive accuracy is unaffected, but the interpretation suffers.
+
+4.  There are no extreme outliers. Logistic regression assumes that there are no extreme outliers or influential observations in the dataset.
+
+5.  There is a linear relationship between explanatory variables and the logit of the response variable. The model assumes that each continuous feature has a linear relationship with the log-odds of scoring. It does not require a linear relationship with the probability.
+
+6.  The sample size is sufficiently large. The model needs enough events per feature to have a stable estimation and draw valid conclusions. A common rule of thumb is at least 10 events, in this case goals, per estimated parameter.
+
+The parameters are estimated by maximum likelihood [@hosmer2000]. Because the outcomes are assumed independent Bernoulli variables, the log-likelihood for $n$ shots is
+
+$$\mathcal{l}\left( \beta_{0},\ \ldots,\ \beta_{p} \right) = \ \sum_{i = 1}^{n}{\left\lbrack y_{i}\log p_{i} + (1 - \ y_{i})log(1 - \ p_{i}) \right\rbrack\ ,}$$
+
+with $p_{i}$ defined by the sigmoid above. Maximising this is equivalent to minimising the Bernoulli deviance (log-loss). The score equations have no closed-form solution, so the estimates are found iteratively, most commonly by iteratively reweighted least squares, which converges quickly because the log-likelihood is concave.
+
+### Extreme Gradient Boosting (XGBoost) Model
+
+XGBoost is an efficient implementation of gradient tree boosting [@chen2016]. It is an ensemble method, meaning it combines many simple base models into one stronger predictor. A single decision tree is easy to interpret but has high sampling variability, because trees fitted to different samples from the same population can look very different. Provost and Domingos [-@provost2003] noted that single trees tend to over or underfit, and that combining many trees gives better probability based ranking, reflected in a higher AUC score. Bagging and random forests reduce variance by growing many trees independently on bootstrap samples and averaging them. Boosting, however, takes a different route [@james2021]. The trees are grown sequentially, and each new tree is fitted to correct the errors left by the trees before it.
+
+XGBoost is widely used for structured, tabular data and has performed well in prediction competitions, which makes shot-level xG data a natural application. The xG literature supports this choice of model once richer feature sets, particularly spatial features derived from freeze frames, are introduced. Robberechts and Davis [-@robberechts2020] found that with an "advanced" set of 47 features, boosted trees overtook logistic regression, but only once several seasons of data were available. With too little data, the model performed worse. Mead, O'Hare and McMenemy [-@mead2023] compared logistic regression, a multi-layer perceptron, random forest, AdaBoost and XGBoost across five major European leagues and found XGBoost gave the best log loss overall. Anzer and Bauer [-@anzer2021] reported similarly strong results for an XGBoost model built on synchronized positional and event data. The dependence on sample size matters here, because freeze-frame features add many predictors without adding goals. The regularisation, subsampling and tuning described below are how XGBoost's flexibility is controlled when goals are rare.
+
+Unlike logistic regression, XGBoost does not specify a parametric functional form relating the features to the outcome. The relationship is learned from the data as a sum of piecewise-constant tree functions, which lets the model capture non-linear effects and interactions between features automatically.
+
+Gradient boosting:
+
+Consider first the basic algorithm for regression as define by James et al. [-@james2021]. A base prediction is made, the mean of the response, ${\widehat{y}}^{(0)} = \ \overline{y}$. A small tree with $d$ splits is fitted to the residuals of this prediction, and its predictions ${\widehat{r}}^{(b)}$, scaled by a learning rate $\eta$, are added to the model. The residuals are updated and then the process repeats. After B trees,
+
+$${\widehat{y}}^{(b)} = \ {\widehat{y}}^{(b - 1)} + \ \eta{\widehat{r}}^{(b)},\ \ \widehat{y} = \ \overline{y} + \ \eta\sum_{b = 1}^{B}{\widehat{r}}^{(b)}$$
+
+Each tree accounts for some of the variation left unexplained by its predecessors. The initial trees capture the strongest patterns and subsequent trees give smaller improvements. The learning rate down-weights each tree, so the model improves gradually. This slow learning needs more trees but tends to generalise better. Unlike bagging and random forests, boosting can overfit if B is too large, so B must be tuned, typically by cross-validation.
+
+The residuals fitted at each step are the negative gradient of the squared-error loss, which allows the procedure to be extended to any differentiable loss [@friedman2001]. For a binary outcome the Bernoulli (logistic) loss is used,
+
+$$\mathcal{l}\left( y_{i},\ {\widehat{y}}_{i} \right) = \  - \left\lbrack y_{i}\log p_{i} + \left( 1 - \ y_{i} \right)\log\left( 1 - \ p_{i} \right) \right\rbrack,\ \ \ \ \ \ \ p_{i} = \ \frac{1}{1 + \ e^{- {\widehat{y}}_{i}}},\ \ $$
+
+where ${\widehat{y}}_{i}$ is a raw score on the log-odds scale. Each tree is fitted to the negative gradient $y_{i} - \ p_{i}^{(b - 1)}$, and the sigmoid of the final raw score gives the predicted probability, which is the xG value. The final model is therefore additive on the log-odds scale, as a logistic regression is, but the additive components are trees rather than linear terms.
+
+The XGBoost objective and algorithm
+
+XGBoost extends gradient boosting in several ways [@chen2016].
+
+Regularised objective. XGBoost minimises
+
+$$\mathcal{L = \ }\sum_{i = 1}^{n}{\mathcal{l}\left( y_{i},{\widehat{y}}_{i} \right) + \ \sum_{m = 1}^{M}{\left( \gamma J_{m} + \ \frac{\lambda}{2}\sum_{j = 1}^{J_{m}}w_{jm}^{2} \right),}}$$
+
+where $M$ is the number of trees, $J_{m}$ is the number of leaves in tree $m$, and $w_{jm}$ is the weight of leaf $j$ in tree $m$. The first term measures fit and the second penalises complexity. The parameter $\gamma$ is a cost per additional leaf, and $\lambda$ is an L2 penalty that shrinks leaf weights towards zero.
+
+Second-order (Newton) boosting. The model is built additively, ${\widehat{y}}_{i}^{(m)} = \ {\widehat{y}}_{i}^{(m - 1)} + \ \eta f_{m}(x_{i})$. At each step the loss is approximated by a second-order Taylor expansion using its gradient $g_{i}$ and Hessian $h_{i}$. For the logistic loss,
+
+$$g_{i} = \ p_{i}^{(m - 1)} - \ y_{i},\ \ h_{i} = \ p_{i}^{(m - 1)}\left( 1 - \ p_{i}^{(m - 1)} \right)$$
+
+For a fixed tree structure, the optimal weight of leaf $j$ is
+
+$$w_{j}^{*} = \  - \frac{G_{j}}{H_{j} + \ \lambda},\ \ G_{j} = \ \sum_{i \in I_{j}}^{}{g_{i},\ \ H_{j} = \ \sum_{i \in I_{j}}^{}h_{i}}$$
+
+where $I_{j}$ is the set of shots in leaf $j$. Using the curvature in $h_{i}$ typically gives more stable and faster convergence than gradients alone.
+
+Greedy split finding with pruning. Trees are grown greedily. Each candidate split is scored by the reduction in the regularised objective,
+
+$$Gain = \ \frac{1}{2}\left\lbrack \frac{G_{L}^{2}}{H_{L} + \ \lambda} + \ \frac{G_{R}^{2}}{H_{R} + \ \lambda} - \ \frac{{(G_{L} + \ G_{R})}^{2}}{H_{L} + \ H_{R} + \ \lambda} \right\rbrack - \ \gamma,$$
+
+where $L$ and $R$ denote the left and right child nodes. A split is kept only if its gain is positive, so splits that do not improve the objective sufficiently are discarded, which effectively prunes the tree.
+
+Stochastic regularisation and other features. In addition to $\eta$, XGBoost supports row and column subsampling, which inject randomness across boosting rounds, reduce variance and improve generalisation. At each split it also learns a default direction for observations with missing values [@chen2016], so missing data are handled without imputation. The algorithm is designed for parallel computation and efficient memory use.
+
+Hyperparameters
+
+The behaviour of the model is governed by hyperparameters that are tuned rather than estimated: the number of boosting rounds $B$, the learning rate $\eta$ (smaller values need more rounds), the maximum tree depth $d$ (which sets the highest-order interaction a single tree can represent), the regularisation parameters $\gamma$ and $\lambda$, the minimum child weight, and the row and column subsampling fractions.
+
+Monotonic constraints
+
+In xG modelling, the direction of some relationships is known from the nature of the game. Shots close to goal from central locations have a higher chance of scoring than shots from wide positions further away [@vatvani2022]. So, xG should decrease as the distance from goal increases, and increases as the angle to goal increases. Imposing this knowledge can improve model performance, particularly when data is limited.
+
+XGBoost allows this through monotonic constraints. For a feature $x_{j}$ constrained to be non-decreasing the model must satisfy $f\left( \underline{x} \right) \leq f({\underline{x}}^{'})$ whenever $\underline{x}$ and $\underline{x}'$ are identical except that $x_{j}\  \leq \ {x'}_{j}$, with the inequality reversed for a non-increasing constraint. The constraint is enforced during tree construction, where a candidate split on a constrained feature is admitted only if the resulting leaf weights respect the required ordering. Every tree is then monotone in that features, a sum of monotone functions is monotone, and because the sigmoid is monotone the predicted xG is too. Monotonic constraints were not used in our modelling, but their inclusion in future modelling may further extend our research.
+
+XGBoost is non-parametric and makes far weaker assumptions than logistic regression:
+
+1.  Observations are independent and identically distributed. As with most supervised learning methods, the training observations are assumed to be independent draws from the same underlying distribution as the data the model will later be applied to. If observations are dependent, for example grouped or clustered, models evaluated with ordinary random cross-validation can look better than they are, because related observations end up in both the training and validation sets and information leaks between them. Grouped cross-validation, where all observations from a group are kept together, mitigates this [@roberts2017].
+
+2.  Stationarity of the data-generating process. The relationship between the features and the outcome learned from the training data is assumed to remain the same for new data. If the underlying process changes over time or differs between populations, the learned patterns no longer apply and predictive performance deteriorates. Trees cannot adapt to such changes without being refitted.
+
+3.  Correctly specified loss function. Boosting minimises a chosen loss function, and the loss must suit the task. For a binary outcome, in our case, the Bernoulli (logistic) loss assumes that the outcome is binary with a probability that depends on the features. Minimising this loss encourages good probability estimates but does not guarantee that they are well calibrated, so predicted probabilities may need to be checked and, if necessary, recalibrated when they are interpreted as probabilities.
+
+4.  Additive tree structure. The model assumes the true underlying function can be approximated well by a sum of shallow decision trees. This is a very flexible class that captures non-linearities and interactions, with a tree of depth $d$ able to represent interactions of at most $d$ features. However, each tree is piecewise constant, so smooth relationships are approximated by steps, and predictions outside the range of the training data are held constant at the value of the nearest leaf, so the model cannot extrapolate trends.
+
+5.  Informative and accurately recorded data. The model can only learn patterns that exist in the features, and it cannot recover signal that is absent or poorly measured. Noise in the features or errors in the outcome labels weaken performance, and a flexible boosted model can fit such noise if the number of rounds $B$ is too large or the regularisation is too weak.
+
+6.  Sufficient sample size. Because the model is flexible, it needs enough data to learn interactions reliably. With small samples, or a rare outcome category, deep trees may be fitted to very few observations, producing unstable splits and overfitting. Shallow trees, a small learning rate, a minimum child weight, the regularisation parameters $\gamma$ and $\lambda$, and subsampling are the main ways of controlling this.
+
+7.  Missing data mechanism. XGBoost learns a default direction at each split for observations with missing values. This assumes the mechanism that produces the missing values is the same in the training data and in any data the model is later applied to. If missingness occurs differently, or is related to the outcome in a way that changes, the learned defaults can be misleading.
+
+XGBoost does not require features to be scaled or normalised, because tree splits depend only on the ordering of values and are therefore unchanged by monotonic transformations. It does not require a linear relationship between features and outcome, and it does not require the features to be free of multicollinearity. Correlated features mainly affect how importance is shared among them rather than the quality of the predictions. These properties give XGBoost great flexibility, but they come at the cost of the direct, coefficient-level interpretability that a parametric model such as logistic regression provides.
+
+## Data preparation
+
+The analysis dataset was built from the StatsBomb Open Data using StatsBombR package. It is essential when using spatial data that the positional information of the shooter is synchronised with that of the other relevant players at the exact moment the shot is taken [@anzer2021]. StatsBomb provides the shot event and its freeze frame together, so there is no synchronisation issue that may arise when combining datasets that are sourced separately.
+
+Shots were filters to open play in men's competitions, excluding penalties, direct free kicks and corners (Section 3.2). Shots taken off camera were also removed, because StatsBomb estimates the player positions in their freeze frames, as well as shots with no goalkeeper recorded in the freeze frame. A further 119 shots with missing feature values were removed. Although XGBoost can handle missing values natively, these shots were excluded for all models so that all ten models are trained and evaluated on exactly the same shots, as logistic regression requires complete observations. The final dataset contains 62,037 shots from 2,651 matches, of which 10.2% are goals.
+
+The data was split 80/20 at match level into a training set (2,121 matches, 49,413 shots) and a test set (530 matches, 12,624 shots). Splitting by match, rather than by shot, prevents related shots from appearing in both sets. This and other leakage safeguards are described in Section 4.5.
+
+Goals are rare events (roughly 10% of all shots) causing a class imbalance. Cavus & Biecek [-@cavus2022] used a random over-sampling method to balance the data before modelling, but resampling distorts predicted probabilities, so it was not used in this study. Imbalance is instead handled through the choice of evaluation metrics (Section 4.8).
+
+## Features and feature sets {#sec-feature-sets}
+
+Spatial features are features derived from freeze frame coordinates. Features provided by StatsBomb along with the shot events that contain spatial information, but are not derived from freeze frame data, will be considered as non-spatial features. For example, StatsBomb's data provides a feature called `shot.one_on_one`, which says whether or not the shooter was in a one-on-one situation with the goalkeeper. This is the data collector's judgement, and is not derived mathematically or using freeze frames. This specification is necessary as this project looks to determine models that do and don't use spatial context derived from freeze frame data.
+
+We define our features using the following two distinctions. First, we have standard features, which are features that commonly show up in literature, and are widely accepted as necessary inclusions in xG models. Those that are not considered standard features, we refer to as extended features, which are additional features which we add to our standard features to create more complex models. The second distinction is whether or not a feature is derived from freeze-frame context. Features that include freeze-frame context are referred to as spatial features. Non-spatial features are referred to as baseline features. These definitions are appropriate as our project looks at the value of adding freeze-frame, or spatial, features to xG models. Some non-spatial, or baseline, features include some spatial context, but this context is to do with the shooter, not the event location information. All information about any players other than the shooter is contained in the freeze-frame data. Thus, features that use the shooter's location but not any freeze-frame information are still regarded as non-spatial, baseline features. @tbl-feature-groups below summarises the four different groups our features fall into.
+
+```{=latex}
+\begingroup\rowcolors{2}{gray!8}{white}
+```
+
+|  | Non-spatial | Spatial (freeze frame) |
+|--------------|----------------------|----------------------|
+| Standard | Baseline (5) | Spatial (7) |
+| Extended | Extended Baseline (22) | Extended Spatial (20) |
+
+: The four feature groups {#tbl-feature-groups}
+
+```{=latex}
+\endgroup
+```
+
+The feature groups shown in @tbl-feature-groups above will be used to create five model feature sets. These feature sets and which types of features they include are summarised in @tbl-feature-sets below.
+
+```{=latex}
+\begingroup\rowcolors{2}{gray!8}{white}
+```
+
+| Model | Baseline (5) | Spatial (7) | Extended Baseline (22) | Extended Spatial (20) | \# Features |
+|------------------------------|--------------|------------|----------------------|---------------------|--------------|
+| M1 Baseline | $\checkmark$ |  |  |  | 5 |
+| M2 Spatial | $\checkmark$ | $\checkmark$ |  |  | 12 |
+| M3 Extended Baseline | $\checkmark$ |  | $\checkmark$ |  | 27 |
+| M4 Extended Baseline + Spatial | $\checkmark$ | $\checkmark$ | $\checkmark$ |  | 34 |
+| M5 Extended Spatial | $\checkmark$ | $\checkmark$ | $\checkmark$ | $\checkmark$ | 54 |
+
+: The five feature sets and the feature groups each one uses {#tbl-feature-sets}
+
+```{=latex}
+\endgroup
+```
+
+@tbl-feature-sets above shows our five feature sets and defines how will refer to models M1 to M5. Each model, its purpose, and what they contain, is described further below.
+
+### M1 - Baseline feature set
+
+The first is the Baseline set, which includes the features most commonly found in the literature (the baseline features). First is `DistToGoal`, which captures the shooters distance from the centre of the goal. The second is `shot_angle`, which captures the angle created if you were to draw lines from the shooter to either goal post. The angle between those two lines is the `shot_angle`, and shots from in front, and closer to goal will have larger `shot_angle` values then shots taken from further away or at wider angles. These two features are derived from and capture the same information as the shot event's x and y coordinates, and thus those features are not included in the baseline set. The shot event coordinates are not obtained from the freeze frame data, and thus these first two features are not considered spatial features, despite containing spatial information. The third baseline feature is `shot.body_part.name`, which is a categorical variable describing which part of the body the shot was taken with, including the players head, right and left foot, or other if it was with anything else. The fourth feature is the `assist_type`, which indicates the type of pass that set up the shot, such as a through ball or cross, or none if there was no assisting pass. The final baseline is `play_pattern.name`, which describes the phase of play leading up to the shot, such as from a throw in, regular play, or a counterattack.
+
+### M2 - Spatial feature set
+
+The second feature set is the Spatial feature set. This includes the Baseline features used in the Baseline Feature set, and then adds seven more spatial features commonly found in the literature, that are derived from Freeze Frame data. These seven features capture three types of information, being information relating to the goalkeeper's position, opponent defender positions, and lastly, the level of pressure being applied to the shooter at the time the shot is taken.
+
+Spatial features relating to the goalkeeper include `DistToKeeper`, which shows how far the goalkeeper is off their goal line, `DistSGK` which shows the distance from the shooter to the keeper, `AngleDeviation` which shows how far off the keeper is from a straight line from the shooter to the centre of the goal, and `gk_in_triangle`, states if the keeper is in or outside the shot triangle from the shooter to the goal posts. There is one feature focused on defender positions called `DefendersInCone`, which states the number of opposing outfield players that are in the shooting triangle between the shooter and the goal, excluding the goalkeeper. The pressure features include `distance.ToD1.360` which states the distance from the shooter to the closest outfield opponent in any direction, and `n_within_1m`, which shows the number of opponents in close proximity to the shooter, which may include the goalkeeper.
+
+The results from our models using these feature sets will be compared to the results provided by StatsBomb. Although these features are common in the literature, they are not the features used in StatsBomb's own xG model, whose specification is proprietary and not publicly documented. How each feature was calculated is described in Section 4.4 below.
+
+### M3 - Extended baseline feature set
+
+The extended baseline feature set is used to give the baseline model more event information prior to adding spatial features, to see if any potential improvement in model performance can be gained by adding features that do not use freeze-frame context. The spatial model may perform better than the initial baseline model just due to having more features and more information and may not be due to them specially being spatial features.
+
+### M4 - Extended baseline and spatial feature set
+
+This feature set adds the standard spatial features to the extended baseline model above. This will allow us to see if model performance improves due to the inclusion of the spatial features, even when the model already includes plenty of event information. Comparing M3 and M4 will show if the few standard spatial features alone improve model performance. This will be useful for testing H1 with a baseline that contains more information.
+
+### M5 - Extended spatial feature set
+
+The extended spatial feature set uses all features, both spatial and baseline, standard and extended. Comparing M4 to M5 will show if adding additional extended spatial features improves model performance over just using the standard spatial features. Comparing M3 to M5 will let us see if the inclusion of many spatial features can improve model performance over a complex model that lacks freeze-frame context. This will be used when testing H2.
+
+.
+
+## Feature Engineering
+
+This section will list all the features used in our models, and how they were derived. The features are grouped by which category they are in. The features were either derived by ourselves, or were provided and defined either by the data [@statsbomb2019], or were calculated using the StatsBombR package [@yam2026] on the data. The baseline and spatial features were chosen based on the most common features used in the literature as shown in section 2.2. The extended features were chosen from a mixture of literature, those used by StatsBomb, and ones derived from the StatsBombR package. As some of these features have missing values in the data, their inclusion in modelling results in 119 shots being removed from the dataset as mentioned in section 3.2.
+
+### The coordinates and measurements
+
+Before we look at the features, we must first look at the units of measurement and coordinates as define by StatsBomb [-@statsbomb2019]. StatsBomb standardises all coordinates into a 120 x 80 unit pitch so that pitches of different sizes share one coordinate system. While no official unit of measurement is stated in the documentation, multiple features define their measurements as being measured in yards, such as Pass length [@statsbomb2019, p. 16]. When these pass distances are calculated manually by looking the locations of the event data, we get the same values as provided by the Pass length data. In addition, the grid size of 120 x 80 matches the maximum yard amounts as stated by The International Football Association Board [@ifab2025]. The specific coordinates of the goal and penalty area, also match the exact yard amounts specified by The International Football Association Board [@ifab2025]. So, while the distances are standardised yards rather than exact real-world distances, for the purposes of this project we will define the numerical units of measurement to be in yards. Some features use meters as a measure of unit, and this is done by converting yards into meters at a rate of 1.094 yards per meter. @fig-coordinates below shows the standardised pitch coordinates at various key locations, which will be important while engineering our features.
+
+```{r}
+#| label: fig-coordinates
+#| fig-cap: "StatsBomb pitch coordinates (yards), with (0, 0) at the top left as in the StatsBomb specification"
+#| fig-scap: "StatsBomb pitch coordinates (yards)"
+#| fig-height: 4.6
+pts <- tribble(
+  ~x,  ~y, ~lab,                        ~lx,  ~ly,
+  0,   0,  "(0, 0)",                    6,    3,
+  120, 0,  "(120, 0)",                  113,  3,
+  0,   80, "(0, 80)",                   6,    77,
+  120, 80, "(120, 80)",                 113,  77,
+  60,  40, "Centre spot\n(60, 40)",     60,   47,
+  108, 40, "Penalty spot\n(108, 40)",   93,   40,
+  120, 40, "Goal centre\n(120, 40)",    112,  46,
+  120, 36, "Post\n(120, 36)",           111,  27,
+  120, 44, "Post\n(120, 44)",           111,  55,
+  102, 18, "Box corner\n(102, 18)",     94,   12,
+  102, 62, "Box corner\n(102, 62)",     94,   68)
+ggplot(pts) +
+  annotate_pitch(dimensions = pitch_statsbomb, fill = "springgreen4", colour = "white") +
+  scale_y_reverse() + # same as StatsBomb's diagram: (0, 0) top left
+  geom_segment(aes(x = x, y = y, xend = lx, yend = ly), colour = "grey85", linewidth = 0.3) +
+  geom_point(aes(x, y), colour = "gold", size = 2.5) +
+  geom_label(aes(lx, ly, label = lab), size = 3, label.size = 0, lineheight = 0.9) +
+  theme_pitch(aspect_ratio = 80 / 120)
+```
+
+@fig-coordinates above shows the detail for locations around goal on the right-hand side. This is because StatsBomb gives goal coordinates only for the goal at x = 120, and every shot that takes place from inside the left half all are taken in the direction of x = 120. From this, we can infer that all the data is orientated so that the attacking team in any given event is attacking the right-hand goal, and we use the coordinates as such.
+
+### Baseline Features
+
+First, we have our 5 baseline features as commonly found in literature. These features include some spatial context, but they do not use any freeze-frame information, and thus are not spatial features. @tbl-baseline-features below summaries the features.
+
+```{=latex}
+\begingroup\rowcolors{2}{gray!8}{white}
+```
+
+| Feature | Type | Definition | Derived by | Literature |
+|------------------------------|------------------|------------------------------------------------------------|--------------------------------|------------------------------------------------------------|
+| `DistToGoal` | Numeric | Straight-line distance from the shot to the goal centre (yards) | StatsBombR [@yam2026] | Robberechts & Davis [-@robberechts2020]; Anzer & Bauer [-@anzer2021]; Mead et al. [-@mead2023] |
+| `shot_angle` | Numeric | Opening angle between the two posts as seen from the shot (degrees) | This study | Anzer & Bauer [-@anzer2021]; Scholtes & Karakuş [-@scholtes2024]; Bajons & Harringer [-@bajons2025] |
+| `shot.body_part.name` | Categorical | Left Foot, Right Foot, Head, Other | StatsBomb data [@statsbomb2019] | Robberechts & Davis [-@robberechts2020]; Bransen & Davis [-@bransen2021]; Anzer & Bauer [-@anzer2021] |
+| `assist_type` | Categorical | Type of key pass: None, Pass, Cross, Through ball, Set piece | This study | Robberechts & Davis [-@robberechts2020]; Bransen & Davis [-@bransen2021]; Cavus & Biecek [-@cavus2022] |
+| `play_pattern.name` | Categorical | How the possession started: Regular Play, From Counter, From Corner, From Free Kick, From Throw In, From Goal Kick, From Keeper, From Kick Off, Other | StatsBomb data [@statsbomb2019] | Cavus & Biecek [-@cavus2022]; Mead et al. [-@mead2023] |
+
+: The Baseline features {#tbl-baseline-features}
+
+```{=latex}
+\endgroup
+```
+
+The features are explained in more detail below.
+
+-   `DistToGoal`
+
+This is the straight-line Euclidean distance from the shooter to the centre of the goal. It is calculated as follows,
+
+$$\text{DistToGoal}_{i} = \sqrt{\left( 120 - x_{i} \right)^{2} + \left( 40 - y_{i} \right)^{2},}$$
+
+where $x_i$ and $y_i$ are the $x$ and $y$ coordinates of the shot event location from the StatsBomb data. The centre of the goal is the coordinates (120, 40). The further away from goal, the greater `DistToGoal` becomes.
+
+-   `shot_angle`
+
+This represents the angle from the shooter to the goalposts. If you draw a line from the shot location to each post, the angle between those lines when they meet at the shooter is the shot angle. It's calculated as follows
+
+$$\theta_{i} = \arccos\left( \frac{a_{i}^{2} + b_{i}^{2} - 8^{2}}{2a_{i}b_{i}} \right) \times \frac{180}{\pi},$$
+
+$$a_{i} = \sqrt{\left( 120 - x_{i} \right)^{2} + \left( 36 - y_{i} \right)^{2}},\quad b_{i} = \sqrt{\left( 120 - x_{i} \right)^{2} + \left( 44 - y_{i} \right)^{2}},$$
+
+where $a_i$ and $b_i$ are the straight-line Euclidean distances posts. A shot from a central position close to the goal will have a value closer to 180, while a shot far away and from a wide angle will have a value closer to 0. If you draw a line from a shooter to each goal post, and add another line between the goal posts, we get a triangle. The area within this triangle is the space between the shooter and the goal, and we will often refer to it simply as "the triangle".
+
+-   `shot.body_part.name`
+
+This is a categorical variable that is provided by StatsBomb, and lists which body part the shot was taken with. The categories are Left Foot, Right Foot, Head, and Other (such as a player's knee or chest for example).
+
+-   `assist_type`
+
+This is a categorical variable. An assist (or key pass) refers to the last pass made to the shooter before they took the shot. If there was a key pass prior to a shot being taken, it can be categorised as set piece, cross, through ball, pass, or none if there was no key pass. This is commonly referred to as the key pass, as an assist usually refers only to passes that resulted in goals.
+
+-   `play_pattern.name`
+
+This describes the start of the phase of possession prior to the shot being taken. It is provided by StatsBomb, and categories include Regular Play, From Counter, From Corner, From Free Kick, From Throw In, From Goal Kick, From Keeper, From Kick Off, and Other.
+
+@fig-baseline-example below shows an example and highlights each of the baseline features.
+
+```{r}
+#| label: fig-baseline-example
+#| fig-cap: "The Baseline features for one example shot"
+#| fig-height: 3.1
+sm <- dat("shots_model")
+sf <- dat("shots_final")
+s <- sm |>
+  filter(goal == 1, assist_type == "Cross", DistToGoal > 10, DistToGoal < 16, abs(location.y - 40) > 4) |>
+  slice(1) |>
+  left_join(sf |> select(id, shot.key_pass_id, competition_name, season_name), by = "id")
+# where the key pass started: saved by p2 (newer runs), otherwise from that season's raw events
+kp_all <- dat("key_passes_raw")
+if (!"location" %in% names(kp_all)) {
+  season_file <- paste0(gsub("[^A-Za-z0-9]+", "_", s$competition_name), "_",
+                        gsub("[^A-Za-z0-9]+", "_", s$season_name), ".rds")
+  kp_all <- readRDS(here("data", "raw_events", season_file))
+}
+kp <- kp_all |> filter(id == s$shot.key_pass_id)
+kp_x0 <- kp$location[[1]][1]; kp_y0 <- kp$location[[1]][2]
+kp_x1 <- kp$pass.end_location[[1]][1]; kp_y1 <- kp$pass.end_location[[1]][2]
+x0 <- s$location.x; y0 <- s$location.y
+xl <- c(min(kp_x0 - 4, 88), 121)
+yl <- c(-1, 81)
+ggplot() +
+  annotate_pitch(dimensions = pitch_statsbomb, fill = "springgreen4", colour = "white") +
+  annotate("polygon", x = c(x0, 120, 120), y = c(y0, 36, 44), fill = "white", alpha = 0.3) +
+  annotate("segment", x = x0, y = y0, xend = 120, yend = c(36, 44), colour = "white") +
+  annotate("segment", x = x0, y = y0, xend = 120, yend = 40, colour = "gold", linetype = "dashed", linewidth = 0.9) +
+  annotate("segment", x = kp_x0, y = kp_y0, xend = kp_x1, yend = kp_y1, colour = "skyblue",
+           linewidth = 0.9, arrow = arrow(length = unit(0.25, "cm"), type = "closed")) +
+  annotate("point", x = kp_x0, y = kp_y0, colour = "skyblue", size = 3) +
+  annotate("point", x = x0, y = y0, colour = "red", size = 4) +
+  annotate("label", x = x0 + 0.35 * (120 - x0), y = y0 + 0.35 * (40 - y0),
+           label = paste0(round(s$shot_angle, 1), "°"), size = 3.5, label.size = 0) +
+  annotate("label", x = x0 + 0.75 * (120 - x0), y = y0 + 0.75 * (40 - y0) + 2 * sign(y0 - 40),
+           label = paste0(round(s$DistToGoal, 1), " yd"), size = 3.5, label.size = 0) +
+  annotate("label", x = kp_x0, y = kp_y0 - 2 * sign(kp_y1 - kp_y0),
+           label = paste(s$assist_type, "(key pass)"), size = 3.5, label.size = 0) +
+  coord_flip(xlim = xl, ylim = yl, expand = FALSE) +
+  theme_pitch(aspect_ratio = diff(xl) / diff(yl)) +
+  theme(plot.subtitle = element_text(size = 10)) +
+  labs(subtitle = paste0("DistToGoal = ", round(s$DistToGoal, 1), " yd (dashed) | shot_angle = ",
+                         round(s$shot_angle, 1), "° (shaded)\nBody part: ", s$shot.body_part.name,
+                         " | Assist type: ", s$assist_type, " | Play pattern: ", s$play_pattern.name))
+```
+
+From @fig-baseline-example above, we know the attacking team started their possession from a corner. The key pass came from a cross to the back post, where the shooter headed the ball from over 10 yards away, with an angle to goal of about 33 degrees.
+
+### Spatial Features
+
+These are the 7 spatial features commonly found in the literature. These features are all derived from the freeze-frame information provided by StatsBomb. @tbl-spatial-features below summarises the features.
+
+```{=latex}
+\begingroup\rowcolors{2}{gray!8}{white}
+```
+
+| Feature | Type | Definition | Derived by | Literature |
+|---------------------------|------------|------------------------------------------------------------|----------------------|------------------------------------------------------------|
+| `DistToKeeper` | Numeric | Distance from the goalkeeper to the goal centre (yards) | StatsBombR [@yam2026] | Anzer & Bauer [-@anzer2021]; Scholtes & Karakuş [-@scholtes2024]; Bajons & Harringer [-@bajons2025] |
+| `DistSGK` | Numeric | Distance from the shooter to the goalkeeper (yards) | StatsBombR [@yam2026] | Bajons & Harringer [-@bajons2025] |
+| `AngleDeviation` | Numeric | Angle at the goal centre between the shooter and the goalkeeper (degrees) | StatsBombR [@yam2026] | Bajons & Harringer [-@bajons2025] |
+| `gk_in_triangle` | Binary | Goalkeeper inside the triangle from the shot to the posts | This study | Anzer & Bauer [-@anzer2021]; Scholtes & Karakuş [-@scholtes2024] |
+| `DefendersInCone` | Count | Outfield opponents inside the cone from the shooter to just outside the posts | StatsBombR [@yam2026] | Anzer & Bauer [-@anzer2021]; Scholtes & Karakuş [-@scholtes2024]; Bajons & Harringer [-@bajons2025] |
+| `n_within_1m` | Count | Opponents (keeper included) within 1.1 yards (about 1 m) of the shooter | This study | Scholtes & Karakuş [-@scholtes2024] |
+| `distance.ToD1.360` | Numeric | Distance to the nearest outfield opponent in any direction (yards) | StatsBombR [@yam2026] | Lucey et al. [-@lucey2015]; Bajons & Harringer [-@bajons2025] |
+
+: The Spatial features {#tbl-spatial-features}
+
+```{=latex}
+\endgroup
+```
+
+The features in table above are explored in more detail below.
+
+-   `DistToKeeper`
+
+This is the straight line Euclidean distance from the goalkeeper to the centre of the goal, calculated as follows,
+
+$$\text{DistToKeeper}_{i} = \sqrt{\left( 120 - x_{i}^{GK} \right)^{2} + \left( 40 - y_{i}^{GK} \right)^{2}},$$
+
+where $x_i^{GK}$ and $y_i^{GK}$ are the goalkeeper's coordinates. This lets us see how far off their goal line the goalkeeper is. If they are in the goal mouth centre, the value will be close to 0.
+
+-   `DistSGK`
+
+This is the distance from the shooter to the goalkeeper, calculated as,
+
+$$\text{DistSGK}_{i} = \sqrt{\left( x_{i}^{GK} - x_{i} \right)^{2} + \left( y_{i}^{GK} - y_{i} \right)^{2},}
+$$
+
+where $x_i^{GK}$ and $y_i^{GK}$ are the goalkeeper's coordinates and $x_i$ and $y_i$ are the shooter's coordinates. If the keeper is close, the value will be small and close to 0.
+
+-   `AngleDeviation`
+
+This is how far the keeper is off the line directly from the shooter to the centre of the goal. It is calculated as,
+
+$$\text{AngleDeviation}_{i} = \left| \text{AngleToGoal}_{i} - \text{AngleToKeeper}_{i} \right|,$$
+
+where $\text{AngleToGoal}_i$ is the cardinal direction in degrees from the shooter to the centre of the goal, and $\text{AngleToKeeper}_i$ is the keeper's direction from the goal centre. If the keeper is directly between the shooter and the goal, this value will equal 0. It is important to distinguish between `AngleToGoal` which is a direction, while `shot_angle` (the baseline feature) is an angle size.
+
+-   `gk_in_triangle`
+
+This is a binary variable which indicates yes or no (1 or 0), whether or not the keeper is inside the area between shooter and the goal posts, similar to the feature `shot_angle`. It is calculated as,
+
+$$t_{i} = \frac{x_{i}^{GK} - x_{i}}{120 - x_{i}},$$
+
+$$y_{i} + t_{i}\left( 36 - y_{i} \right)\mspace{6mu} \leq \mspace{6mu} y_{i}^{GK}\mspace{6mu} \leq \mspace{6mu} y_{i} + t_{i}\left( 44 - y_{i} \right),$$
+
+where if $t_i$ is between or equal to 1 and 0 (if the keeper is closer to the goal than the shooter or not) and $y_i^{GK}$ is between the two lines from the shooter to the goal post, then we get a value of 1. If the keeper is caught out of position and is not in the triangle between the shooter and the goal, we get a value of 0.
+
+-   `DefendersInCone`
+
+This is the number of defending players in the triangle between the shooter and the goal (excluding the goal keeper). If the defence throws multiple bodies in the way the number will be higher, but if there are no defenders it will be a value of 0. This triangle area is slightly larger than the area used for `gk_in_triangle`, as in this case the lines drawn from the striker are to just outside the posts, not the posts themselves.
+
+-   `n_within_1m`
+
+This is the number (or count) of defending players (including the goalkeeper) within 1m of the shooter. The distance from each of the defending players to the shooter is calculated as,
+
+$$d_{ij} = \sqrt{\left( x_{j} - x_{i} \right)^{2} + \left( y_{j} - y_{i} \right)^{2}},$$
+
+and if $d_{ij}$ is less than 1.1 yards (1m), they are included in the count. If there are no nearby opposing players, this value is 0.
+
+-   `distance.ToD1.360`
+
+This is the distance of the closest defender (excluding the goalkeeper) to the shooter, calculated as,
+
+$$\text{distance.ToD1.360}_{i} = \min_{j}d_{ij},$$
+
+where small values mean there is a defender close applying high pressure, and larger values meaning the shooter is in open space.
+
+@fig-spatial-example below shows an example shot and the spatial features. The locations of the goal keeper, the attacking player's teammates, and opposing outfield defenders, are obtained from the freeze-frame data.
+
+```{r}
+#| label: fig-spatial-example
+#| fig-cap: "The Spatial features for one example shot"
+#| fig-height: 3.6
+sm <- dat("shots_model")
+sf <- dat("shots_final") |> select(id, shot.freeze_frame)
+s <- sm |>
+  filter(DefendersInCone >= 1, DistToKeeper > 5, distance.ToD1.360 > 2, distance.ToD1.360 < 5,
+         DistToGoal > 10, DistToGoal < 20) |>
+  slice(1) |>
+  left_join(sf, by = "id")
+x0 <- s$location.x; y0 <- s$location.y; gx <- s$location.x.GK; gy <- s$location.y.GK
+ff <- s$shot.freeze_frame[[1]] |>
+  mutate(x = map_dbl(location, 1), y = map_dbl(location, 2),
+         is_gk = !teammate & abs(x - gx) < 0.01 & abs(y - gy) < 0.01,
+         who = case_when(teammate ~ "Teammate", is_gk ~ "Goalkeeper", TRUE ~ "Opponent"),
+         d = sqrt((x - x0)^2 + (y - y0)^2))
+near <- ff |> filter(who == "Opponent") |> slice_min(d, n = 1)
+circ <- tibble(t = seq(0, 2 * pi, length.out = 100), x = x0 + 1.1 * cos(t), y = y0 + 1.1 * sin(t))
+xl <- c(min(x0, ff$x) - 4, 121)
+yl <- c(-1, 81)
+ggplot() +
+  annotate_pitch(dimensions = pitch_statsbomb, fill = "springgreen4", colour = "white") +
+  annotate("polygon", x = c(x0 - 1, 120, 120), y = c(y0, 35, 45), fill = "gold", alpha = 0.25) +
+  annotate("polygon", x = c(x0, 120, 120), y = c(y0, 36, 44), fill = NA, colour = "white", linetype = "dotted") +
+  annotate("segment", x = gx, y = gy, xend = 120, yend = 40, colour = "orange", linewidth = 0.9) +
+  annotate("segment", x = x0, y = y0, xend = gx, yend = gy, colour = "orange", linetype = "dashed", linewidth = 0.9) +
+  annotate("segment", x = x0, y = y0, xend = near$x, yend = near$y, colour = "black", linewidth = 0.9) +
+  geom_path(data = circ, aes(x, y), colour = "red", linewidth = 0.7) +
+  geom_point(data = ff, aes(x, y, fill = who), shape = 21, size = 3.5, colour = "black") +
+  annotate("point", x = x0, y = y0, colour = "red", size = 4) +
+  scale_fill_manual(values = c(Teammate = "white", Opponent = "royalblue", Goalkeeper = "orange"), name = NULL) +
+  coord_flip(xlim = xl, ylim = yl, expand = FALSE) +
+  theme_pitch(aspect_ratio = diff(xl) / diff(yl)) +
+  theme(legend.position = "bottom", legend.text = element_text(size = 12), plot.subtitle = element_text(size = 10)) +
+  labs(subtitle = paste0("DistToKeeper = ", round(s$DistToKeeper, 1), " yd (orange line) | DistSGK = ",
+                         round(s$DistSGK, 1), " yd (orange dashed)\nAngleDeviation = ", round(s$AngleDeviation, 1),
+                         "° | gk_in_triangle = ", s$gk_in_triangle, " (dotted) | DefendersInCone = ", s$DefendersInCone,
+                         " (shaded)\nn_within_1m = ", s$n_within_1m, " (red circle) | distance.ToD1.360 = ",
+                         round(s$distance.ToD1.360, 1), " yd (black line)"))
+```
+
+@fig-spatial-example above shows that the keeper is slightly off on the line between the shooter and the centre of the goal, so `AngleDeviation` is 10 degrees. The keeper is in the triangle, as is one defender. The closest defender is 2.2 yards away, more than a meter, so `n_within_1m` is 0.
+
+### Extended Baseline Features
+
+The extended baseline features are summarised in @tbl-ext-baseline-features.
+
+```{=latex}
+\begingroup\rowcolors{2}{gray!8}{white}
+```
+
+| Feature | Type | Definition | Derived by |
+|--------------------------------|----------------|------------------------------------------------------|----------------------|
+| `shot.first_time` | Binary | Shot taken first time, without controlling the ball | StatsBomb data |
+| `shot.technique.name` | Categorical | Normal, Volley, Half Volley, Lob, Backheel, Diving Header, Overhead Kick | StatsBomb data |
+| `shot.aerial_won` | Binary | Shot taken after winning an aerial duel | StatsBomb data |
+| `shot.one_on_one` | Binary | Shooter one-on-one with the goalkeeper | StatsBomb data |
+| `shot.open_goal` | Binary | Shot at an open goal | StatsBomb data |
+| `shot.follows_dribble` | Binary | Shot taken straight after a dribble | StatsBomb data |
+| `under_pressure` | Binary | Shooter under pressure from an opponent | StatsBomb data |
+| `minute` | Numeric | Match minute of the shot | StatsBomb data |
+| `period` | Categorical | Half of the match (1 or 2) | StatsBomb data |
+| `location.x`, `location.y` | Numeric | Shot coordinates (yards) | StatsBomb data |
+| `AngleToGoal` | Numeric | Shooter's direction as seen from the goal centre, 0 to 180 degrees along the goal line (90 = straight in front) | StatsBombR |
+| `player_position` | Categorical | Shooter's position grouped as defender, midfielder or attacker. The 7 shots by goalkeepers were grouped with defenders. | This study |
+| `is_home` | Binary | Shooting team is the home team | This study |
+| `goal_diff` | Numeric | Shooting team's goals minus opponent's goals before the shot | This study |
+| `time_on_pitch` | Numeric | Minutes since the shooter came on (starters from minute 0) | This study |
+| `weak_foot` | Binary | Shot taken with the player's non-dominant foot | This study |
+| `poss_time` | Numeric | Seconds from the start of the possession to the shot | This study |
+| `kp_length` | Numeric | Length of the key pass (yards), 0 if none | This study |
+| `kp_angle` | Numeric | Angle of the key pass (radians), 0 if none | This study |
+| `kp_height` | Categorical | Ground, Low or High pass, None if no key pass | This study |
+| `is_rebound` | Binary | Same team had another shot in the previous 3 seconds | This study |
+
+: The Extended Baseline features {#tbl-ext-baseline-features}
+
+```{=latex}
+\endgroup
+```
+
+Of the features in @tbl-ext-baseline-features above, the following are defined in literature. These features are home/away, goal difference, shot time and weak foot [@mead2023], and first time, one-on-one, open goal, technique and under pressure [@scholtes2024].
+
+### Extended Spatial Features
+
+The extended spatial features are summarised in @tbl-ext-spatial-features.
+
+```{=latex}
+\begingroup\rowcolors{2}{gray!8}{white}
+```
+
+| Feature | Type | Definition | Derived by |
+|------------------------------|------------|------------------------------------------------------------|-----------------|
+| `AngleToKeeper` | Numeric | Goalkeeper's direction as seen from the goal centre, 0 to 180 degrees along the goal line | StatsBombR |
+| `location.x.GK`, `location.y.GK` | Numeric | Goalkeeper coordinates (yards) | StatsBombR |
+| `density` | Numeric | Sum of 1/distance to the shooter over outfield opponents ahead of the shooter | StatsBombR |
+| `density.incone` | Numeric | As density, only opponents inside the cone | StatsBombR |
+| `InCone.GK` | Count | Players of either team in a 2-yard-wide strip between the shooter and the goalkeeper | StatsBombR |
+| `distance.ToD1` | Numeric | Distance to the nearest outfield opponent ahead of the shooter (negative if none ahead) | StatsBombR |
+| `distance.ToD2` | Numeric | As `distance.ToD1`, second nearest | StatsBombR |
+| `distance.ToD2.360` | Numeric | Distance to the second-nearest outfield opponent in any direction | StatsBombR |
+| `AttackersBehindBall` | Count | Teammates ahead of the shooter | StatsBombR |
+| `DefendersBehindBall` | Count | Outfield opponents ahead of the shooter | StatsBombR |
+| `DefArea` | Numeric | Area of the rectangle around all opposition defenders | StatsBombR |
+| `d1_magnitude` | Numeric | Absolute value of `distance.ToD1` | This study |
+| `d1_goalside` | Binary | Nearest defender is ahead of the shooter | This study |
+| `n_within_2m`, `n_within_3m` | Count | As `n_within_1m`, within 2.2 and 3.3 yards | This study |
+| `pressure_gauss` | Numeric | Sum over opponents of exp(-d²/(2 × 1.5²)), d = distance to the shooter | This study |
+| `goal_blocked` | Numeric | Share of the goal mouth hidden from the shooter by opponents, 0 to 1 | This study |
+| `teammates_in_box` | Count | Teammates inside the penalty box | This study |
+| `teammates_within_3m` | Count | Teammates within 3.3 yards of the shooter | This study |
+
+: The Extended Spatial features {#tbl-ext-spatial-features}
+
+```{=latex}
+\endgroup
+```
+
+The following features in @tbl-ext-spatial-features above are defined in literature, `goal_blocked` and the Gaussian pressure idea [@vatvani2022; @bajons2025], counts within a radius [@lucey2015; @scholtes2024], and the StatsBombR features [@yam2026].
+
+### Feature correlation
+
+Many of our features have high correlations with each other. This is important to be aware of, as correlated features make LR coefficients less stable, but don't hurt prediction. In XGB, the correlated features split importance between them. @tbl-high-correlation and @tbl-goal-correlation show the highest correlations among features, and with the shot outcome response variable.
+
+```{r}
+#| label: tbl-high-correlation
+#| tbl-cap: "Pairs of M5 features with an absolute correlation above 0.7."
+fs <- out("feature_sets")
+numeric_features <- function(features) {
+  features[map_lgl(features, \(f) is.numeric(shots_model[[f]]) | is.logical(shots_model[[f]]))]
+}
+as_numbers <- function(features) shots_model[features] |> mutate(across(everything(), as.numeric))
+shots_model <- dat("shots_model")
+m5_numeric <- numeric_features(fs$full)
+
+cor(as_numbers(m5_numeric)) |>
+  as_tibble(rownames = "Feature 1") |>
+  pivot_longer(-`Feature 1`, names_to = "Feature 2", values_to = "Correlation") |>
+  filter(match(`Feature 1`, m5_numeric) < match(`Feature 2`, m5_numeric), abs(Correlation) > 0.7) |>
+  arrange(desc(abs(Correlation))) |>
+  kable_tbl(digits = 2)
+```
+
+```{r}
+#| label: tbl-goal-correlation
+#| tbl-cap: "The ten M5 features most strongly correlated with scoring (goal = 1)."
+tibble(Feature = m5_numeric,
+       `Correlation with goal` = map_dbl(m5_numeric, \(f) cor(as.numeric(shots_model[[f]]), shots_model$goal))) |>
+  arrange(desc(abs(`Correlation with goal`))) |>
+  slice(1:10) |>
+  kable_tbl(digits = 2)
+```
+
+The correlation heatmap below shows the correlation between all the numeric features used in our modelling for the entire dataset.
+
+```{r}
+#| label: fig-correlation
+#| fig-cap: "Pearson correlation between the nine numeric features in M2 (binary features coded 0/1)."
+#| fig-scap: "Pearson correlation between the nine numeric features in M2 (binary features coded 0/1)"
+#| fig-height: 5.5
+m2_numeric <- numeric_features(fs$std_ff)
+cor(as_numbers(m2_numeric)) |>
+  as_tibble(rownames = "f1") |>
+  pivot_longer(-f1, names_to = "f2", values_to = "r") |>
+  mutate(f1 = factor(f1, levels = m2_numeric), f2 = factor(f2, levels = rev(m2_numeric))) |>
+  ggplot(aes(f1, f2, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = sprintf("%.2f", r)), size = 3.5) +
+  scale_fill_gradient2(low = "#D55E00", mid = "white", high = "#0072B2", limits = c(-1, 1)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid = element_blank(), legend.position = "right") +
+  labs(x = NULL, y = NULL, fill = "Correlation")
+```
+
+In @fig-correlation above, the highest correlations are between `DistSGK` and `DistToGoal` at 0.96, `DistToGoal` and `location.x` -0.94, `DistSGK` and `location.x` -0.93, `n_within_2m` and `pressure_gauss` 0.91, `AngleToGoal` and `location.y` 0.90.
+
+Across M5, 20 feature pairs have correlations above 0.7. Most are the same quantity measured twice, such as `location.x` and `DistToGoal`, minute and period, or `n_within_2m` and `pressure_gauss`. @tbl-goal-correlation shows no single feature has a correlation with scoring above 0.30.
+
+## Handling Data Leakage
+
+All features from the StatsBomb dataset that contained information that would only have been available after the outcome of the shot was known, have been excluded. For example, average shot velocity (avevelocity), was excluded on this basis. It was calculated using shot.end_location, which is only recorded once the shot's result is known, so including it would let the model indirectly see the outcome it was meant to predict.
+
+Another potential cause of data leakage is how one handles the train/test data split. Splits were made at the match level, not the shot level, so all shots from a given match fall entirely into either the training or test set. This prevents the model from learning match-specific patterns and overfitting when using that same information when tested on other shots from that match. The same was applied to the cross-validation during hyperparameter tuning, with each fold being split based on match and not per individual shot. This ensures no shots from a single match are ever involved in both training and testing.
+
+
+
+```{r}
+#| label: tbl-split
+#| tbl-cap: "Train / test split (split by match)"
+dat("shots_model") |>
+  left_join(out("match_split"), by = "match_id") |>
+  group_by(Set = str_to_title(set)) |>
+  summarise(Matches = n_distinct(match_id), Shots = n(), `Conversion rate` = mean(goal)) |>
+  arrange(desc(Shots)) |>
+  kable_tbl(digits = 3, format.args = list(big.mark = ","))
+```
+
+## Model Specification
+
+Two algorithms were chosen to be run on the feature sets. The first is Logistic Regression (LR), a binomial generalised linear model. This will provide a baseline as well as a more interpretable model. No regularisation was used in LR, as it is not needed with a big enough sample size, as you only need 10 events per parameter to avoid overfitting in LR [@peduzzi1996]. We have 49,413 training set shots, and in xG models it has been shown LR performance converges after only 6,000 shots [@robberechts2020]. Tureen & Olthof [-@tureen2022] used plain LR on samples of only 5,000 to 10,000 StatsBomb shots. @tbl-metrics-train-test below shows that regularisation was not required, as the training and test Brier scores were very similar, which indicates the models did not over fit to the training data, which is the problem regularisation attempts to solve.
+
+The second is XGBoost (XGB), a gradient-boosted trees model, which provides less interpretable results due to its black box nature. Both will be trained and tested on the same data splits. These two algorithms combined with 5 feature sets results in 10 models.
+
+Modelling was done using R version 4.5.2 [@rcore2025], and the xgboost package version 3.2.1.1 [@chen2026], along with glm() and StatsBombR [@yam2026].
+
+## Hyperparameter Tuning
+
+XGBoost was tuned separately for each feature set, using a grid search with 10-fold cross-validation. Folds were split by match, so shots from the same match never appear in both training and validation. The hyperparameter search grid used was similar to that of Bajons and Harringer [-@bajons2025].
+
+We used max_depth $\in$ {4, 5, 6}, eta $\in$ {0.01, 0.05, 0.1, 0.2, 0.5}, min_child_weight $\in$ {5, 10, 20}, subsample $\in$ {0.8, 1}, and colsample_bytree $\in$ {0.6, 0.8}. This gives 180 settings per feature set, for a total of 900 across all XGB models. Rounds could go up to 3,000, with early stopping after 20 rounds without improvement. The best settings were chosen using the lowest mean CV log loss.
+
+The selected hyperparameters when tuning the XGBoost models are shown in the tuning plots below, and are summarised as follows.
+
+```{r}
+#| label: tbl-tuning-best
+#| tbl-cap: "Selected XGBoost hyperparameters and cross-validated log loss for each feature set"
+out("xgb_tuning") |>
+  group_by(tier) |>
+  slice_min(logloss, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  mutate(Model = factor(tier_full[tier], levels = tier_full)) |>
+  arrange(Model) |>
+  select(Model, `Max depth` = max_depth, Eta = eta, `Min child weight` = min_child_weight, Subsample = subsample,
+         `Column sample` = colsample_bytree, Rounds = nrounds, `CV log loss` = logloss) |>
+  kable_tbl(digits = c(0, 0, 2, 0, 1, 1, 0, 4))
+```
+
+```{r}
+#| label: tbl-tuning-spread
+#| tbl-cap: "Spread of CV log loss across the grid"
+out("xgb_tuning") |>
+  group_by(tier) |>
+  summarise(Best = min(logloss), Worst = max(logloss),
+            `Spread (all)` = max(logloss) - min(logloss),
+            `Spread (eta ≤ 0.1)` = max(logloss[eta <= 0.1]) - min(logloss[eta <= 0.1])) |>
+  mutate(Model = factor(tier_full[tier], levels = tier_full)) |>
+  arrange(Model) |>
+  select(Model, Best, `Worst (all settings)` = Worst, `Spread (all)`, `Spread (eta ≤ 0.1)`) |>
+  kable_tbl(digits = 4)
+```
+
+The results of all runs are shown in @fig-tuning below.
+
+```{r}
+#| label: fig-tuning
+#| fig-cap: "XGBoost tuning results for each model (10-fold cross-validated log loss). Each point is the best result for that combination of max_depth and eta across the other tuned hyperparameters (min_child_weight, subsample and colsample_bytree). The selected setting for each model is circled."
+#| fig-scap: "XGBoost tuning results for each model (10-fold cross-validated log loss)"
+#| fig-height: 8
+tt <- out("xgb_tuning") |> mutate(model = factor(tier_full[tier], levels = tier_full))
+by_de <- tt |> group_by(model, max_depth, eta) |> summarise(logloss = min(logloss), .groups = "drop")
+best <- tt |> group_by(model) |> slice_min(logloss, n = 1, with_ties = FALSE)
+ggplot(by_de, aes(max_depth, logloss, colour = factor(eta))) +
+  geom_line() + geom_point(size = 2) +
+  geom_point(data = best, aes(max_depth, logloss), inherit.aes = FALSE,
+             shape = 21, size = 5, stroke = 1, colour = "black") +
+  facet_wrap(~ model, scales = "free_y", ncol = 2) +
+  scale_x_continuous(breaks = 4:6) +
+  labs(x = "max_depth", y = "CV log loss", colour = "eta")
+```
+
+The spread across all settings was about a 0.003 to 0.0096 difference in log loss, including high eta rates of 0.2 and 0.5. At eta less than or equal to 0.1, the spread was only 0.0009 to 0.0016. The gap between the M1 and M5 feature sets is about 0.0152, around 10 times larger, which indicates the difference in models was mainly due to the features rather than tuning. Thus, tuning made little difference, and a wider search is unlikely to change the comparison between feature sets. The optimal eta was 0.01 and is at the edge of the search grid, so it is possible expanding the grid for eta may improve model performance.
+
+## Evaluation Framework
+
+The model performance will be evaluated using multiple metrics. First, we have probability metrics, which include Brier score, Brier skill score, and log loss, and ranking metrics AUC and PR-AUC. For classification metrics, we used accuracy, recall, specificity, precision, balanced accuracy and F1 score. These classification metrics will be run at the goal rate in the training data set, and at 0.5.
+
+This will be calculated on both the training and test data sets. The data is split into these sets using an 80/20 random split on a match level, with all shots within each match being added to either set. The models performances will also be benchmarked against StatsBomb's own published xG (shot.StatsBomb_xg in the StatsBomb dataset), which will allow our models to be evaluated against an industry standard.
+
+### Probability metrics
+
+The most important metric for evaluating an xG model is commonly reported as being the Brier score [@fairchild2018; @decroos2020; @robberechts2020; @bransen2021]. We used the binary form of the score proposed by Brier [-@brier1950],
+
+$$BS = \frac{1}{N}\sum_{i = 1}^{N}\left( p_{i} - y_{i} \right)^{2}\ ,$$
+
+where $N$ is the number of shots, $p_i$ is the predicted xG of shot $i$, and $y_i$ is the outcome of shot $i$ (1 if it was a goal, and 0 otherwise). The lower the Brier score the better, and the best possible Brier score is 0 when a model has perfect predictions. Brier is used to assess how well a model is both ranked and calibrated relative to other models.
+
+Next, we have the Brier skill score which is commonly used to evaluate xG models [@fairchild2018; @decroos2020; @tureen2022]. The Brier skill score is used to see how much better a model does than just predicting the goal rate for each shot's xG. This is calculated as follows,
+
+$$BSS = 1 - \frac{BS}{BS_{ref}},\quad BS_{ref} = \overline{y}\left( 1 - \overline{y} \right),$$
+
+where $BS$ is the Brier score as previously described, and $BS_{ref}$ is a reference used to show what the Brier score of a model that just assignment the average goal rate to all shots. This is calculated using $\bar{y}$, which is the average shot outcome value of all shots in the training data set, which in our case is 10.3%.
+
+The last probability metric we consider is log loss, which punishes confident but incorrect predictions more so than the Brier score does [@gneiting2007], and it has been previously used to evaluate xG models [@decroos2020; @mead2023]. It is calculated as follows,
+
+$$LL = - \frac{1}{N}\sum_{i = 1}^{N}\left\lbrack y_{i}{\log p}_{i} + \left( 1 - y_{i} \right)\log\left( 1 - p_{i} \right) \right\rbrack,$$
+
+where $N$ is the number of shots, $y_i$ is the outcome of shot $i$, and $p_i$ is the predicted xG value of shot $i$. Log loss is also used by XGBoost during hyper parameter tuning.
+
+### Ranking metrics
+
+Other performance metrics used include ranking metrics. First, we have AUROC, commonly referred to as AUC, which is commonly used in xG modelling [@eggels2016; @anzer2021; @cavus2022; @mead2023; @bandara2024]. AUROC measures how well a model ranks shots by their xG predictions. It does this by working out the probability that a randomly chosen shot that resulted in a goal gets a higher xG value than a randomly chosen shot that did not result in a goal. A score of 1 is perfect, with a score of 0.5 being no better than random [@fawcett2006]. It does not look at model calibration, and thus a model can rank shots well and have a high AUROC, but still have poor xG predictions, and thus have a poor Brier score. In addition, it can also be distorted by differences in scoring rates between leagues. AUROC is used for additional context but is not the main metric for measuring model performance [@robberechts2020].
+
+The next metric is PR-AUC, which measures the area under the precision-recall curve (see section 4.8.4 below). It is useful for ranking when dealing with data with a high class imbalance, such as shot outcome where goals are scored from roughly 10% of shots. PR-AUC focuses on the rare class, and thus is more informative than AUROC. The value obtained by a model that knows nothing is equal to the goal rate (10.3% in our training data). Precision alone can be skewed when dealing with class imbalance [@fawcett2006].
+
+### Calibration
+
+It is important for an xG model that its predicted probabilities model what happens in reality. This is referred to as model calibration, where the predicted xG values from the test data set are compared to their actual outcomes [@robberechts2020; @vancalster2019; @bajons2025]. This is done by grouping all xG predictions into equally sized bins, with all shots in a bin containing similar xG predictions. The average xG of the bin is then compared to the percentage of shots that resulted in goals from those shots. For example, a bin with 100 shots with an average xG of 0.3, we would expect to see around 30% of them result in goals (or 30 goals). A well calibrated model would have a similar mean shot outcome to mean xG across all bins. For assessing our models, the test data is sorted based on the predicted xG values, and then split into 20 equal sized bins. The data is sorted before, and similar values are binned, as choosing shots at random for bins would result in a low number of bins having high xG value due to the rarity of high scoring opportunities. This way, we can ensure a model is well calibrated across all xG values, not just low values.
+
+Calibration is useful to use in combination with ranking, as calibrated probabilities are what we want out of an xG model [@robberechts2020]. The probabilities need to be accurate, and well ranked. Brier can be used to see how well a model performs, and then ranking and calibration can be checked separately to see what contributes to the increases in Brier score.
+
+### Classification metrics
+
+We can use our xG predictions to predict whether or not a shot will result in a goal (1 or 0), by choosing a cut-off point above which all shots with an xG exceeding the cut-off get predicted as a goal. This allows us to calculate classification metrics, based on those yes and no, goal or no goal, predictions. For our modelling, we use two cut off points, the default at 0.5, and the training goal rate of 0.103. The following metrics can be calculated from these classification predictions and are used in xG models [@fawcett2006; @fairchild2018],
+
+$$\text{Recall} = \frac{TP}{TP + FN},\quad\text{Specificity} = \frac{TN}{TN + FP},\quad\text{Precision} = \frac{TP}{TP + FP,}$$
+
+$$\text{Accuracy} = \frac{TP + TN}{TP + TN + FP + FN},$$
+
+$$\text{Balanced~accuracy} = \frac{\text{Recall} + \text{Specificity}}{2},\quad F_{1} = \frac{2 \cdot \text{Precision} \cdot \text{Recall}}{\text{Precision} + \text{Recall}},$$
+
+where TP is the true positive rate, in our case, when a shot that resulted in a goal was predicted to be a goal, TN is the true negative rate, where a shot was correctly predicted to not be a goal, FP is the false positive rate, where a shot is incorrectly predicted to result in a goal, and FN is the false negative rate, where a shot is incorrectly predicted as not resulting in a goal.
+
+These metrics are secondary to Brier score, as xG is about calculating probabilities, not whether an individual shot will be a goal or not. Classification metrics are also vulnerable when calculated on imbalanced data. For example, in our case, a model that just predicts the majority class of no goal will be accurate roughly 90% of the time. Balanced accuracy and F1 try to combat this, but as this is not a classification problem, the resulting metrics will be used to supplement more appropriate metrics such as Brier.
+
+### Significance tests
+
+Significance tests have been used to judge whether added information improves xG models [@bandara2024]. This project uses the Wilcoxon signed-rank test to compare model performance, and the Wilcoxon rank-sum test to test our third hypothesis, whether or not there is a difference between two separate groups of shots, specifically, shots in the box as opposed to shots outside the box.
+
+The Wilcoxon signed-rank test is calculated as follows,
+
+$$d_{i} = \left( p_{A,i} - y_{i} \right)^{2} - \left( p_{B,i} - y_{i} \right)^{2},$$
+
+$$W^{+} = \sum_{i:\, d_{i} > 0}^{}{{rank}\left( \left| d_{i} \right| \right),}
+$$
+
+where $p_{A,i}$ and $p_{B,i}$ are the xG predictions for shot $i$ from two different models, and $y_i$ is the actual shot outcome [@wilcoxon1945]. Model A is the smaller model, and model B is the model with additional features, so d_i greater than 0 means model B was better. The mean of d_i is equal to the difference in the two model's Brier scores. The null hypothesis is that neither model has smaller per-shot squared errors, while the alternative hypothesis is that one model's errors are systematically smaller. It is a two-sided test, and alone does not say which model is better, merely that they are not the same. This is preferable to a t-test, as most shots have tiny errors and goals have large ones, so they aren't normal, and the resulting per-shot squared errors are very skewed. The Wilcoxon signed-rank test is only calculated on the per-shot squared errors that make up our Brier score, as Brier is our main metric. Tests were not done on our log loss or AUROC metrics.
+
+The Wilcoxon rank-sum test ranks all the $d_i$ values of each shot, and sums the ranks within each group (shots outside and shots inside the box) as follows,
+$$W = \sum_{i \in \text{inside}}^{}{{rank}\left( d_{i} \right)},$$
+
+where $d_i$ are as calculated for the Wilcoxon signed-rank test. If the grouping makes a difference, then the resulting sum of ranks will be difference in each group. The null hypothesis is that the d_i have the same distribution in each group, while the alternative hypothesises is that the improvement is larger in one zone than the other. This is a two-sided test, and doesn't say which zone has the higher improvement.
+
+### Class imbalance and resampling
+
+Our data has a high class imbalance, with only about 10.2% of all shots resulting in a goal (10.3% in the training set), as shown in @tbl-split above. As already mentioned, classification metrics do not do well when classes are imbalanced. A way to solve this is by using resampling (such as over or under sampling). Resampling is used to change the goal rate in a training data set so that a model sees a better class balance to stop a model from favouring the majority class.
+
+In this project, we are concerned with predicted probabilities (values between 0 and 1), not predicting yes or no is each shot going to result in a goal (values only 0 and 1). In xG models, resampling causes predicted probabilities to be too high, for calibration to be poor. It's been shown resampling does not improve a model's AUROC [@vandengoorbergh2022; @carriero2025], and thus model ranking is not improved, while prediction and calibration are negatively impacted. This was shown to occur in xG models. Cavus & Biecek [-@cavus2022] used over-sampling, and their XGBoost Brier score increased from 0.075 to 0.172, a large decrease in performance. Similarly, Bandara et al. [-@bandara2024] used under-sampled and obtained a high Brier score of 0.166.
+
+This project handles class imbalance through the use of appropriate performance metrics. First, we use probability metrics such as Brier and log loss, which are not skewed toward the majority class [@gneiting2007]. The Brier skill score is used as it compares against always predicting the goal rate, a model that predicts the goal rate for every shot, which means the class imbalance is always accounted for. In addition, we use PR-AUC which focuses on the rare class of goals [@fawcett2006]. We also use calibration plots to show whether or not model predictions align with reality. Finally, for classification metrics we included the cut-off value at the goal rate, including metrics such as balanced accuracy and F1 which look at accuracy across classes, and using recall to check the models don't always predict the majority class of no goal.
+
+## Feature importance
+
+Feature importance is assessed differently for each model type, consistent with the approach used in Mead, O'Hare and McMenemy [-@mead2023]. For logistic regression, model coefficients and odds ratios are used, giving a direct and interpretable measure of each feature's effect on shot outcome. For XGBoost, SHAP (SHapley Additive exPlanations) values are used instead, since gradient-boosted tree models do not provide directly interpretable coefficients [@lundberg2017]. SHAP values are grounded in Shapley values from cooperative game theory and quantify each feature's contribution to a model's prediction, both at the level of an individual shot (local explanation) and across the dataset as a whole (global explanation), and have previously been used to interpret black box xG models in football [@anzer2021; @hewitt2023]. SHAP is calculated as follows [@lundberg2017],
+
+$$f\left( \mathbf{x}_{i} \right) = \phi_{0} + \sum_{j = 1}^{p}\phi_{}ij\},$$
+
+$$\overline{\left| \phi_{j} \right|} = \frac{1}{N}\sum_{i = 1}^{N}|\phi_{ij}|,$$
+
+where $f(\mathbf{x}_i)$ is the XGBoost prediction for shot $i$ on the log-odds scale, $\mathbf{x}_i$ is the vector of feature values for shot $i$, $\phi_0$ is the base value (the models average prediction over the training data in log odds), $\phi_{ij}$ is the SHAP value of feature $j$ for shot $i$, $p$ is the number of features in the model, $\overline{|\phi_j|}$ is the mean absolute SHAP value of feature $j$ (the overall importance), and $N$ is the number of test shots the SHAP values were calculated on. Taking the absolute values stops the positive and negative effects from cancelling each other out. SHAP values are in log-odds so that they add up exactly to the prediction, which probabilities would not achieve.
+
+Feature importance is used to interpret models, such as for RQ2. As it calculated on model performance on the unseen test set data, feature importance was not used for choosing a model or features. The 10 models and their features were determined prior to any modelling being done on the test set data. In addition to SHAP importance, we also used permutation importance and gain importance. Permutation importance is measured on the test set shot data, and was used to assess both the LR and XGB models. Each feature gets shuffled five times, and the percentage increase in the test Brier score is compared with the model's Brier score without any shuffling. Categorical features get shuffled as one feature. The permutation importance is calculated as follows [@breiman2001],
+
+$$PI_{j} = \frac{1}{5}\sum_{r = 1}^{5}\frac{BS^{(j,r)} - BS}{BS} \times 100,$$
+
+where $BS^{(j,r)}$ is the Brier score for the $r$th shuffle of feature $j$.
+
+Gain was also used to measure feature importance. It is only applicable to the XGBoost models. Each feature's share of the total loss reduction from all tree splits is added together, with dummy variables being added together into the original feature they were derived from. It is calculated using the fitted trees, so it only looks at the training data, and not the test set. Gain has been used as a cross-check in xG models [@mead2023]. It is calculated as follows [@chen2016],
+
+$$G_{j} = \frac{\sum_{s \in S_{j}}^{}\Delta L_{s}}{\sum_{k = 1}^{p}{\sum_{s \in S_{k}}^{}\Delta}L_{s}},$$
+
+where $S_j$ is every split on feature $j$ across all trees, and $\Delta L_s$ is the loss reduction achieved by split $s$. Correlated features share feature importance. As shown above, there are many highly correlated features. In Gain, shuffling `DistToGoal` for example may not decrease model performance as the information in `DistSGK` (which has a correlation of 0.96 with `DistToGoal`) may be used instead.
+
+## Summary
+
+To summarise, our methodology is as follows. We have 62,037 shots from open-play, which are split by match using an 80/20 split into a training and test data set. By using and combining four types of features, we created five feature sets (M1 to M5). Each feature set is fitted using both logistic regression (LR), and XGBoost (XGB), giving a total of 10 models. StatsBomb's xG (StatsBomb) was used as a benchmark as it is an industry standard. XGBoost models were tuned using 10-fold grouped cross-validation, using 180 settings per feature set. Brier is the main metric used to measure model performance. Other metrics used are log loss, AUROC, PR-AUC, calibration and classification metrics. The Wilcoxon signed-rank test is used to compare model performance, and the Wilcoxon rank-sum test was used to compare performance improvement in different zones of the pitch, specially inside compared to outside the box. No resampling was applied, as the chosen performance metrics are not negatively impacted by class imbalance. Finally, variable importance (primarily SHAP importance) was used for interpreting which features were most important in the models.
