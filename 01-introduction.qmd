@@ -37,7 +37,7 @@ As a statistic, xG is used in a variety of ways. Below we look at @fig-xg-timeli
 ```{r}
 #| label: fig-xg-timeline
 #| fig-cap: "Cumulative StatsBomb xG over one match (Chelsea 2-2 Tottenham Hotspur, Premier League 2015/16). Each step is a shot and the dots are goals"
-#| fig-scap: "Cumulative StatsBomb xG over one match (Chelsea 2-2 Tottenham Hotspur, Premier League 2015/16)"
+#| fig-scap: "Cumulative StatsBomb xG, Chelsea 2-2 Tottenham Hotspur, 2015/16"
 #| fig-height: 4
 timeline <- out("xg_timeline")
 ggplot(timeline, aes(minute, cum_xg, colour = team.name)) +
@@ -55,7 +55,7 @@ ggplot(timeline, aes(minute, cum_xg, colour = team.name)) +
 ```{r}
 #| label: fig-xg-result
 #| fig-cap: "Match results by StatsBomb xG difference (team minus opponent), all 2,651 men's matches, each match counted from both teams' side"
-#| fig-scap: "Match results by StatsBomb xG difference (team minus opponent), all 2,651 men's matches"
+#| fig-scap: "Match results by StatsBomb xG difference, all 2,651 men's matches"
 #| fig-height: 4.5
 out("xg_match_results") |>
   mutate(xg_bin = cut(pmin(pmax(xg_diff, -2.5), 2.5), breaks = seq(-2.5, 2.5, by = 0.5), include.lowest = TRUE,
@@ -135,4 +135,4 @@ Finally, Chapter 7 is the Conclusion, which summarises the main findings and ret
 
 ## Code
 
-All our code used for our analysis can be found on our GitHub repository using the following link: [REPO LINK]
+All our code used for our analysis can be found on our GitHub repository using the following link: <https://github.com/alangrayhunter/spatial-xG>.

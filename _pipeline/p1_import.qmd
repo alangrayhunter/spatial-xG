@@ -1,0 +1,63 @@
+---
+title: "p1 Import"
+---
+
+Downloads StatsBomb's free data (about an hour). Always downloads everything when run.
+
+Makes:
+
+- data/Comp_Match_Data.RData: competitions and matches (Comp and Matches)
+- data/raw_events/: one file of raw events per competition season, which p2 reads
+
+Player names are removed here, before anything is saved.
+
+```{r}
+#| include: false
+library(tidyverse)
+library(StatsBombR)
+library(here)
+here::i_am("_pipeline/p1_import.qmd")
+
+dir.create(here("data", "raw_events"), recursive = TRUE, showWarnings = FALSE)
+dir.create(here("outputs"), showWarnings = FALSE)
+```
+
+# Competitions and matches
+
+```{r}
+Comp <- FreeCompetitions()
+
+Matches <- FreeMatches(Comp) |>
+  left_join(Comp |> select(competition_id, season_id, competition_name, season_name,
+                           competition_gender, competition_youth),
+            by = c("competition.competition_id" = "competition_id",
+                   "season.season_id" = "season_id"))
+
+save(Comp, Matches, file = here("data", "Comp_Match_Data.RData"))
+cat(nrow(Matches), "matches across", n_distinct(Matches$competition_name), "competitions\n")
+```
+
+# Raw events, one file per competition season
+
+File names like "1. Bundesliga" 2015/2016 = 1_Bundesliga_2015_2016.rds.
+
+```{r}
+comp_seasons <- Matches |>
+  mutate(file = paste0(gsub("[^A-Za-z0-9]+", "_", competition_name), "_",
+                       gsub("[^A-Za-z0-9]+", "_", season_name), ".rds")) |>
+  group_split(file)
+
+for (season_matches in comp_seasons) {
+  out <- here("data", "raw_events", season_matches$file[1])
+
+  events <- free_allevents(MatchesDF = season_matches, Parallel = TRUE) |>
+    select(-any_of(c("player.name", "pass.recipient.name", "substitution.replacement.name"))) # no names
+
+  saveRDS(events, out)
+  cat(basename(out), "-", nrow(events), "events\n")
+  rm(events)
+  gc()
+}
+
+cat(length(list.files(here("data", "raw_events"))), "of", length(comp_seasons), "competition seasons downloaded\n")
+```

@@ -8,7 +8,7 @@ book:
     - "Rejoice Mhuru"
     - "Alan Hunter"
   date: today
-  output-file: "xG-dissertation"
+  output-file: "MHRREJ002_HNTALA001_Honours_FinalHandIn_2026"
   chapters:
     - index.qmd
     - 01-introduction.qmd
@@ -36,6 +36,7 @@ format:
     classoption: [table]
     tbl-pos: "H"
     documentclass: scrreprt
+    papersize: a4 
     pdf-engine: xelatex
     toc: false # the table of contents is placed after the abstract, in index.qmd
     number-sections: true
@@ -46,6 +47,7 @@ format:
     include-in-header:
       text: |
         \usepackage{float}
+        \floatplacement{table}{H}
         \usepackage{amssymb}
         \usepackage{pdfpages}
 

@@ -581,7 +581,7 @@ The correlation heatmap below shows the correlation between all the numeric feat
 ```{r}
 #| label: fig-correlation
 #| fig-cap: "Pearson correlation between the nine numeric features in M2 (binary features coded 0/1)."
-#| fig-scap: "Pearson correlation between the nine numeric features in M2 (binary features coded 0/1)"
+#| fig-scap: "Pearson correlation between the M2 features"
 #| fig-height: 5.5
 m2_numeric <- numeric_features(fs$std_ff)
 cor(as_numbers(m2_numeric)) |>
@@ -726,13 +726,13 @@ Calibration is useful to use in combination with ranking, as calibrated probabil
 
 We can use our xG predictions to predict whether or not a shot will result in a goal (1 or 0), by choosing a cut-off point above which all shots with an xG exceeding the cut-off get predicted as a goal. This allows us to calculate classification metrics, based on those yes and no, goal or no goal, predictions. For our modelling, we use two cut off points, the default at 0.5, and the training goal rate of 0.103. The following metrics can be calculated from these classification predictions and are used in xG models [@fawcett2006; @fairchild2018],
 
-$$\text{Recall} = \frac{TP}{TP + FN},\quad\text{Specificity} = \frac{TN}{TN + FP},\quad\text{Precision} = \frac{TP}{TP + FP,}$$
+$$\text{Recall} = \frac{TP}{TP + FN},\quad\text{Specificity} = \frac{TN}{TN + FP},\quad\text{Precision} = \frac{TP}{TP + FP},$$
 
 $$\text{Accuracy} = \frac{TP + TN}{TP + TN + FP + FN},$$
 
 $$\text{Balanced~accuracy} = \frac{\text{Recall} + \text{Specificity}}{2},\quad F_{1} = \frac{2 \cdot \text{Precision} \cdot \text{Recall}}{\text{Precision} + \text{Recall}},$$
 
-where TP is the true positive rate, in our case, when a shot that resulted in a goal was predicted to be a goal, TN is the true negative rate, where a shot was correctly predicted to not be a goal, FP is the false positive rate, where a shot is incorrectly predicted to result in a goal, and FN is the false negative rate, where a shot is incorrectly predicted as not resulting in a goal.
+where TP is the number of true positives, in our case, when a shot that resulted in a goal was predicted to be a goal, TN is the number of true negatives, where a shot was correctly predicted to not be a goal, FP is the number of false positives, where a shot is incorrectly predicted to result in a goal, and FN is the number of false negatives, where a shot is incorrectly predicted as not resulting in a goal.
 
 These metrics are secondary to Brier score, as xG is about calculating probabilities, not whether an individual shot will be a goal or not. Classification metrics are also vulnerable when calculated on imbalanced data. For example, in our case, a model that just predicts the majority class of no goal will be accurate roughly 90% of the time. Balanced accuracy and F1 try to combat this, but as this is not a classification problem, the resulting metrics will be used to supplement more appropriate metrics such as Brier.
 

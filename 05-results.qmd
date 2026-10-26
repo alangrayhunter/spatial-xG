@@ -214,7 +214,8 @@ out("class_metrics") |>
 
 ```{r}
 #| label: fig-recall-spec-goal
-#| fig-cap: "Recall against specificity, cut-off = training goal rate (0.103)"
+#| fig-cap: "Recall against specificity, cut-off = training goal rate (0.103). Dashed lines join points with equal balanced accuracy, and top right is better"
+#| fig-scap: "Recall against specificity, cut-off = training goal rate (0.103)"
 #| fig-height: 5
 cm <- out("class_metrics") |>
   mutate(m = if_else(model == "statsbomb", "StatsBomb", tier_short[tier]),
@@ -238,32 +239,31 @@ class_scatter <- function(which_cut, x, y, x_lab, y_lab, ba_lines = FALSE) {
     labs(x = x_lab, y = y_lab, shape = NULL)
 }
 
-class_scatter("goal", "specificity", "recall", "Specificity", "Recall", ba_lines = TRUE) +
-  labs(caption = "Cut-off = training goal rate (0.103). Dashed lines: equal balanced accuracy. Top right is better.")
+class_scatter("goal", "specificity", "recall", "Specificity", "Recall", ba_lines = TRUE)
 ```
 
 ```{r}
 #| label: fig-recall-spec-half
-#| fig-cap: "Recall against specificity, cut-off = 0.5"
+#| fig-cap: "Recall against specificity, cut-off = 0.5. Dashed lines join points with equal balanced accuracy, and top right is better"
+#| fig-scap: "Recall against specificity, cut-off = 0.5"
 #| fig-height: 5
-class_scatter("0.5", "specificity", "recall", "Specificity", "Recall", ba_lines = TRUE) +
-  labs(caption = "Cut-off = 0.5. Dashed lines: equal balanced accuracy. Top right is better.")
+class_scatter("0.5", "specificity", "recall", "Specificity", "Recall", ba_lines = TRUE)
 ```
 
 ```{r}
 #| label: fig-f1-ba-goal
-#| fig-cap: "F1 against balanced accuracy, cut-off = training goal rate (0.103)"
+#| fig-cap: "F1 against balanced accuracy, cut-off = training goal rate (0.103). Top right is better"
+#| fig-scap: "F1 against balanced accuracy, cut-off = training goal rate (0.103)"
 #| fig-height: 5
-class_scatter("goal", "balanced_accuracy", "f1", "Balanced accuracy", "F1") +
-  labs(caption = "Cut-off = training goal rate (0.103). Top right is better.")
+class_scatter("goal", "balanced_accuracy", "f1", "Balanced accuracy", "F1")
 ```
 
 ```{r}
 #| label: fig-f1-ba-half
-#| fig-cap: "F1 against balanced accuracy, cut-off = 0.5"
+#| fig-cap: "F1 against balanced accuracy, cut-off = 0.5. Top right is better"
+#| fig-scap: "F1 against balanced accuracy, cut-off = 0.5"
 #| fig-height: 5
-class_scatter("0.5", "balanced_accuracy", "f1", "Balanced accuracy", "F1") +
-  labs(caption = "Cut-off = 0.5. Top right is better.")
+class_scatter("0.5", "balanced_accuracy", "f1", "Balanced accuracy", "F1")
 ```
 
 From the figures and table above, we can see that the cut-off value matters more than the choice of model. All 11 models differ less from each other within a cut-off than they do between cut-off choices. At the goal rate cut-off of 0.103, M5 using XGB has the highest recall of 0.735, the second highest specificity of 0.766, and the highest balanced accuracy of 0.751. At a cut-off of 0.5, these change to 0.16, 0.99 and 0.575 respectively. All values are noticeably lower at the goal rate cut-off for recall, balanced accuracy, and F1 scores, and are higher for specificity. All the spatial models, M2, M4 and M5, have better balanced accuracy than the baseline models, M1 and M3. The simplest model M1 using logistic regression has balanced accuracy. The StatsBomb model has the highest specificity of 0.786, but it's recall is the 2^nd^ lowest at 0.695, with the lowest being M1 using LR at 0.686. StatsBomb's balanced accuracy of 0.74 is equal to that of M2 XGB. The figure showing balanced accuracy vs F1 shows StatsBomb has a relatively lower balanced accuracy than F1 score when compared to the trend of our models.
@@ -362,7 +362,7 @@ Below, the table summarises the importance of each feature set in M5.
 
 ```{r}
 #| label: tbl-shap-groups
-#| tbl-cap: "Share of total SHAP importance by feature group, M5 Extended Spatial XGBoost model"
+#| tbl-cap: "Share of total SHAP importance by feature group, M5 XGBoost model"
 out("shap_group_share") |>
   arrange(desc(pct_of_total)) |>
   transmute(Group = group, Features = features, `Total SHAP importance` = total_shap,
@@ -421,7 +421,7 @@ To check whether the feature rankings depend on the importance measure, the feat
 
 ```{r}
 #| label: tbl-importance-agreement
-#| tbl-cap: "Agreement between the SHAP ranking of the features and the gain and permutation rankings"
+#| tbl-cap: "Agreement between the SHAP, gain and permutation rankings"
 gain_vs_shap <- out("xgb_gain") |>
   inner_join(out("shap_importance"), by = c("tier", "feature")) |>
   left_join(perm |> filter(model == "xgboost") |> select(tier, feature, brier_increase), by = c("tier", "feature")) |>
@@ -552,7 +552,7 @@ Next, we look at the extended features with highest SHAP importance from M5. @fi
 ```{r}
 #| label: fig-dep-m5
 #| fig-cap: "SHAP value against feature value for the six Extended Baseline and Extended Spatial features with the largest SHAP importance among features with at least 10 distinct values, M5 Extended Spatial XGBoost model (top 1% of values removed). Each point is one test shot; the line is a smoothed average."
-#| fig-scap: "SHAP value against feature value, top continuous Extended features, M5 XGBoost model"
+#| fig-scap: "SHAP value against feature value, top continuous Extended features, M5"
 #| fig-height: 7
 dep_full <- out("shap_dependence") |> filter(tier == "full")
 n_values <- dep_full |> group_by(feature) |> summarise(k = n_distinct(value))
@@ -569,7 +569,7 @@ shap_smooth(dep_full |> filter(feature %in% top_cont) |> mutate(feature = factor
 ```{r}
 #| label: fig-dep-m5-counts
 #| fig-cap: "SHAP value for each value of the count and yes/no features among the top Extended features, M5 Extended Spatial XGBoost model."
-#| fig-scap: "SHAP value for each value of the count and yes/no features among the top Extended features"
+#| fig-scap: "SHAP value for the top count and yes/no Extended features, M5"
 shap_box(dep_full |> filter(feature %in% top_disc) |> mutate(feature = factor(feature, levels = top_disc)))
 ```
 
@@ -654,7 +654,7 @@ The results of the models can be used for testing our research hypotheses as lis
 
 ```{r}
 #| label: tbl-hypotheses
-#| tbl-cap: "Brier scores of XGBoost models before and after adding each set of features, test set"
+#| tbl-cap: "Brier scores of XGBoost models before and after adding each feature set"
 added <- c(`std_ff-std` = "Spatial", `std_ctx_ff-std_ctx` = "Spatial", `full-std_ctx_ff` = "Extended Spatial",
            `full-std_ctx` = "Spatial + Extended Spatial", `std_ctx-std` = "Extended Baseline", `std_ctx_ff-std_ff` = "Extended Baseline")
 out("hypothesis_tests") |>
@@ -759,7 +759,7 @@ Again, we see Brier has a greater increase in performance inside the box than ou
 ```{r}
 #| label: fig-zone-share
 #| fig-cap: "Share of each metric's improvement that comes from shots inside and outside the box"
-#| fig-scap: "Share of each metric's improvement that comes from shots inside and outside the box"
+#| fig-scap: "Share of each metric's improvement from inside and outside the box"
 #| fig-height: 7
 z3 <- bind_rows(zone_improvement("std", "std_ff"), zone_improvement("std_ctx", "std_ctx_ff"),
                 zone_improvement("std_ctx", "full")) |>
@@ -782,7 +782,7 @@ ggplot(z3, aes(share, metric, fill = fct_rev(zone))) +
 
 ```{r}
 #| label: tbl-zone
-#| tbl-cap: "Brier score improvement from adding spatial features inside and outside the penalty box, XGBoost models, test set"
+#| tbl-cap: "Brier score improvement from the spatial features, inside and outside the box"
 added <- c(`std_ff-std` = "Spatial", `std_ctx_ff-std_ctx` = "Spatial", `full-std_ctx` = "Spatial + Extended Spatial")
 out("zone_tests") |>
   filter(model_of(new_model) == "xgboost") |>

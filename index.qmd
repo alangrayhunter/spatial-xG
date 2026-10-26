@@ -55,6 +55,7 @@ In preparing this thesis we used various Claude (Anthropic) models between April
 AI was not used to generate any data, produce or interpret the results, or write the thesis on our behalf. All results come from analyses we ran. We reviewed all AI-assisted output, verified it where appropriate, and take full responsibility for the content of this thesis, including any errors.
 
 ```{=latex}
+\setcounter{tocdepth}{1}
 \tableofcontents
 \listoffigures
 \listoftables

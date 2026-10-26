@@ -1,0 +1,232 @@
+---
+title: "p4 Models"
+---
+
+Tunes and fits logistic regression and XGBoost on the five feature sets (M1 to M5), so 10 models. Takes hours (the tuning grid is 900 cross-validated fits).
+
+Makes:
+
+- outputs/match_split.rds: the train/test split (by match) and the CV folds
+- outputs/xgb_tuning.rds: CV log loss for every tuning setting
+- data/predictions.rds: every model's xG for every shot, plus StatsBomb's xG
+- data/shap.rds: SHAP values, XGBoost, test shots
+- outputs/logistic_coefs.rds, outputs/xgb_gain.rds, outputs/permutation_importance.rds
+
+```{r}
+#| include: false
+library(tidyverse)
+library(here)
+here::i_am("_pipeline/p4_models.qmd")
+library(xgboost)
+library(broom)
+
+shots <- readRDS(here("data", "shots_model.rds"))
+feature_sets <- readRDS(here("outputs", "feature_sets.rds"))
+```
+
+# Train / test split
+
+80/20 split by match, so all the shots from one match are on the same side (no leakage). The training matches also get a fold number from 1 to 10 for cross validation, also by match.
+
+```{r}
+set.seed(1997)
+match_split <- tibble(match_id = sample(unique(shots$match_id))) |>
+  mutate(set = if_else(row_number() <= 0.2 * n(), "test", "train"),
+         fold = if_else(set == "train", row_number() %% 10 + 1, NA))
+saveRDS(match_split, here("outputs", "match_split.rds"))
+
+shots <- shots |> left_join(match_split, by = "match_id")
+train <- shots |> filter(set == "train")
+test <- shots |> filter(set == "test")
+
+# conversion rate should be about the same in both
+shots |> group_by(set) |> summarise(shots = n(), matches = n_distinct(match_id), conversion = mean(goal))
+```
+
+# Helper functions
+
+```{r}
+# xgboost only takes numbers, so factors get turned into 0/1 columns
+make_x <- function(data, features) {
+  model.matrix(reformulate(features, intercept = FALSE), data = data)
+}
+
+# those 0/1 columns get named like "shot.body_part.nameHead", this gets the feature name back
+feature_of <- function(column) {
+  case_when(startsWith(column, "shot.body_part.name") ~ "shot.body_part.name",
+            startsWith(column, "play_pattern.name") ~ "play_pattern.name",
+            startsWith(column, "assist_type") ~ "assist_type",
+            startsWith(column, "shot.technique.name") ~ "shot.technique.name",
+            startsWith(column, "player_position") ~ "player_position",
+            startsWith(column, "kp_height") ~ "kp_height",
+            TRUE ~ column)
+}
+
+# permutation importance: shuffle one feature in the test shots (breaks its link with the outcome)
+# and see how much worse the Brier score gets, averaged over 5 shuffles.
+# Used only to interpret the models, never to choose one.
+perm_importance <- function(predict_fn, data, features, repeats = 5) {
+  brier_of <- function(d) mean((predict_fn(d) - d$goal)^2)
+  base <- brier_of(data)
+
+  map(features, \(f) {
+    increase <- map_dbl(1:repeats, \(r) {
+      shuffled <- data
+      shuffled[[f]] <- sample(shuffled[[f]])
+      brier_of(shuffled) - base
+    })
+    tibble(feature = f, brier_increase = mean(increase), sd = sd(increase))
+  }) |>
+    bind_rows() |>
+    mutate(pct_increase = 100 * brier_increase / base, # as a % of the model's own Brier
+           sd_pct = 100 * sd / base)
+}
+```
+
+# XGBoost tuning
+
+Logistic regression has nothing to tune. For XGBoost, every setting in the grid gets 10-fold cross validation on the training data, and the one with the lowest mean CV log loss is kept. Early stopping picks the number of trees.
+
+```{r}
+grid <- expand_grid(
+  max_depth = c(4, 5, 6),
+  eta = c(0.01, 0.05, 0.1, 0.2, 0.5),
+  min_child_weight = c(5, 10, 20),
+  subsample = c(0.8, 1),
+  colsample_bytree = c(0.6, 0.8)
+) # 3 x 5 x 3 x 2 x 2 = 180 settings per feature set
+
+folds <- split(seq_len(nrow(train)), train$fold) # the rows of train in each fold
+tuning_list <- list()
+
+for (tier_name in names(feature_sets)) {
+  set.seed(1997) # per model, so results don't depend on the order
+  dtrain <- xgb.DMatrix(make_x(train, feature_sets[[tier_name]]), label = train$goal)
+
+  tuning_list[[tier_name]] <- map(1:nrow(grid), \(i) {
+    cv <- xgb.cv(params = list(objective = "binary:logistic", eval_metric = "logloss",
+                               max_depth = grid$max_depth[i], eta = grid$eta[i],
+                               min_child_weight = grid$min_child_weight[i],
+                               subsample = grid$subsample[i], colsample_bytree = grid$colsample_bytree[i]),
+                 data = dtrain, nrounds = 3000, folds = folds,
+                 early_stopping_rounds = 20, verbose = FALSE)
+
+    cv_log <- cv$evaluation_log
+    tibble(tier = tier_name, grid[i, ],
+           nrounds = which.min(cv_log$test_logloss_mean),
+           logloss = min(cv_log$test_logloss_mean))
+  }) |>
+    bind_rows()
+
+  print(tier_name) # progress
+}
+
+tuning <- bind_rows(tuning_list)
+saveRDS(tuning, here("outputs", "xgb_tuning.rds"))
+
+# best settings for each feature set
+best <- tuning |>
+  group_by(tier) |>
+  slice_min(logloss, n = 1, with_ties = FALSE) |>
+  ungroup()
+best
+
+rm(folds, tuning_list, dtrain)
+```
+
+# Fitting the models
+
+For each feature set: fit both models on train, then predict every shot (train and test, the set column says which). SHAP values (XGBoost) and permutation importance (both models) are on the test shots. StatsBomb's own xG is added to the predictions as if it was another model.
+
+```{r}
+preds <- list()
+shap_all <- list()
+coefs <- list()
+gain <- list()
+perm <- list()
+
+for (tier_name in names(feature_sets)) {
+  set.seed(1997) # per model, so results don't depend on the order
+  features <- feature_sets[[tier_name]]
+
+  # logistic regression (not regularised)
+  logit_model <- glm(reformulate(features, response = "goal"), data = train, family = binomial)
+
+  coefs[[tier_name]] <- tidy(logit_model) |> mutate(tier = tier_name, odds_ratio = exp(estimate))
+
+  preds[[paste0("logistic_", tier_name)]] <- shots |>
+    select(id, set, goal) |>
+    mutate(model = "logistic", tier = tier_name,
+           pred = predict(logit_model, shots, type = "response"))
+
+  # xgboost, with the best settings from tuning
+  settings <- best |> filter(tier == tier_name)
+
+  xgb_model <- xgb.train(params = list(objective = "binary:logistic", eval_metric = "logloss",
+                                       max_depth = settings$max_depth, eta = settings$eta,
+                                       min_child_weight = settings$min_child_weight,
+                                       subsample = settings$subsample, colsample_bytree = settings$colsample_bytree),
+                         data = xgb.DMatrix(make_x(train, features), label = train$goal),
+                         nrounds = settings$nrounds)
+
+  # xgboost's own importance (gain), as a cross-check on SHAP like Mead et al. (2023)
+  gain[[tier_name]] <- xgb.importance(model = xgb_model) |>
+    as_tibble() |>
+    mutate(feature = feature_of(Feature)) |>
+    group_by(feature) |>
+    summarise(gain = sum(Gain), .groups = "drop") |>
+    mutate(tier = tier_name)
+
+  preds[[paste0("xgboost_", tier_name)]] <- shots |>
+    select(id, set, goal) |>
+    mutate(model = "xgboost", tier = tier_name,
+           pred = predict(xgb_model, make_x(shots, features)))
+
+  # SHAP: one column per 0/1 column, plus a bias column at the end that isn't needed.
+  # The 0/1 columns from the same factor get added back together
+  shap <- predict(xgb_model, make_x(test, features), predcontrib = TRUE)
+
+  shap_all[[tier_name]] <- as_tibble(shap) |>
+    select(-last_col()) |>
+    mutate(id = test$id) |>
+    pivot_longer(-id, names_to = "column", values_to = "shap_value") |>
+    mutate(feature = feature_of(column)) |>
+    group_by(id, feature) |>
+    summarise(shap_value = sum(shap_value), .groups = "drop") |>
+    mutate(tier = tier_name)
+
+  # permutation importance on the test shots, both models. Done last so the shuffling
+  # doesn't change the random numbers the models were fitted with
+  perm[[tier_name]] <- bind_rows(
+    perm_importance(\(d) predict(logit_model, d, type = "response"), test, features) |>
+      mutate(model = "logistic", tier = tier_name),
+    perm_importance(\(d) predict(xgb_model, make_x(d, features)), test, features) |>
+      mutate(model = "xgboost", tier = tier_name))
+
+  print(tier_name) # progress
+}
+
+# StatsBomb's xG as a benchmark
+preds[["statsbomb"]] <- shots |>
+  mutate(model = "statsbomb", tier = "statsbomb", pred = shot.statsbomb_xg) |>
+  select(id, set, goal, model, tier, pred)
+
+preds <- bind_rows(preds)
+
+saveRDS(preds, here("data", "predictions.rds"))
+saveRDS(bind_rows(shap_all), here("data", "shap.rds"))
+saveRDS(bind_rows(coefs), here("outputs", "logistic_coefs.rds"))
+saveRDS(bind_rows(gain), here("outputs", "xgb_gain.rds"))
+saveRDS(bind_rows(perm), here("outputs", "permutation_importance.rds"))
+```
+
+# Quick check
+
+Each step down the list should do a bit better, and everything should be near StatsBomb.
+
+```{r}
+preds |>
+  filter(set == "test") |>
+  group_by(model, tier) |>
+  summarise(brier = mean((pred - goal)^2, na.rm = TRUE), .groups = "drop")
+```

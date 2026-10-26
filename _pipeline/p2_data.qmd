@@ -1,0 +1,147 @@
+---
+title: "p2 Data: extracting and cleaning shots"
+---
+
+Gets the shots out of the raw events (from p1) and cleans them.
+
+Makes (all in data/):
+
+- key_passes_raw.rds: the pass that set up each shot (for assist type and the key pass features)
+- extra_events.rds: footedness, own goals, substitutions and possession start times (for p3)
+- shots_comp_info.rds: every shot with its competition info (EDA and p3)
+- shots_cleaned.rds: men's shots, no penalties, StatsBombR features added (EDA)
+- shots_final.rds: the open play shots used for modelling (EDA and p3)
+
+```{r}
+#| include: false
+library(tidyverse)
+library(StatsBombR)
+library(here)
+here::i_am("_pipeline/p2_data.qmd")
+```
+
+# Shots and the events they need
+
+```{r}
+competition_event_files <- list.files(here("data", "raw_events"), full.names = TRUE)
+stopifnot(length(competition_event_files) > 0) # stop if p1 hasn't been run
+
+shots_list <- list()
+key_passes_list <- list()
+passes_list <- list()
+own_goals_list <- list()
+subs_list <- list()
+poss_start_list <- list()
+
+for (i in seq_along(competition_event_files)) {
+  events <- readRDS(competition_event_files[i])
+  shot_events <- events |> filter(type.name == "Shot")
+
+  shots_list[[i]] <- shot_events
+
+  key_passes_list[[i]] <- events |>
+    filter(id %in% shot_events$shot.key_pass_id) |>
+    select(id, any_of("location"), starts_with("pass."))
+
+  # every pass, for footedness
+  passes_list[[i]] <- events |>
+    filter(type.name == "Pass") |>
+    select(any_of(c("player.id", "pass.body_part.name")))
+
+  # own goals, for goal_diff
+  own_goals_list[[i]] <- events |>
+    filter(type.name == "Own Goal For") |>
+    select(any_of(c("match_id", "index", "team.name")))
+
+  # who came on when, for time on pitch
+  subs_list[[i]] <- events |>
+    filter(type.name == "Substitution") |>
+    select(match_id, sub_minute = minute, any_of(c(player.id = "substitution.replacement.id")))
+
+  # when each possession started, in seconds
+  poss_start_list[[i]] <- events |>
+    group_by(match_id, possession) |>
+    summarise(poss_start = min(minute * 60 + second), .groups = "drop")
+}
+
+shots <- bind_rows(shots_list) |> select(where(\(x) !all(is.na(x))))
+key_passes <- bind_rows(key_passes_list) |> select(where(\(x) !all(is.na(x))))
+
+extra <- list(footedness = get.playerfootedness(bind_rows(passes_list)),
+              own_goals = bind_rows(own_goals_list),
+              subs = bind_rows(subs_list),
+              poss_start = bind_rows(poss_start_list))
+
+saveRDS(key_passes, here("data", "key_passes_raw.rds"))
+saveRDS(extra, here("data", "extra_events.rds"))
+
+print(sum(!is.na(shots$shot.key_pass_id)) - nrow(key_passes)) # key passes not found, should be 0
+
+rm(events, shot_events, shots_list, key_passes_list, passes_list, own_goals_list, subs_list,
+   poss_start_list, key_passes, extra, competition_event_files, i)
+```
+
+# Competition info
+
+```{r}
+load(here("data", "Comp_Match_Data.RData"))
+
+num_shots_before <- nrow(shots)
+shots <- shots |> left_join(Comp |> select(-starts_with("match_")), by = c("competition_id", "season_id"))
+print(nrow(shots) - num_shots_before) # must be 0
+print(sum(is.na(shots$competition_name))) # must be 0
+
+saveRDS(shots, here("data", "shots_comp_info.rds"))
+rm(num_shots_before, Comp, Matches)
+```
+
+# Cleaning
+
+Men's shots, no penalties, then StatsBombR's cleaning and feature functions.
+
+```{r}
+shots <- shots |>
+  filter(shot.type.name != "Penalty", competition_gender == "male") |>
+  cleanlocations() |>
+  goalkeeperinfo() |>
+  shotinfo() |>
+  freezeframeinfo() |>
+  mutate(goal = shot.outcome.name == "Goal",
+         season_start = as.integer(substr(season_name, 1, 4)),
+         ff_players = map_int(shot.freeze_frame, NROW),
+         off_cam = !is.na(off_camera))
+
+# no player names anywhere
+shots <- shots |>
+  select(-contains("player.name")) |>
+  mutate(shot.freeze_frame = map(shot.freeze_frame,
+                                 \(ff) if (is.null(ff)) ff else select(ff, -any_of("player.name"))))
+
+saveRDS(shots, here("data", "shots_cleaned.rds"))
+```
+
+# Final shots for modelling
+
+Open play only (removes corners and direct free kicks), on camera, with a goalkeeper in the freeze frame.
+
+```{r}
+num_shots_before <- nrow(shots)
+shots <- shots |>
+  filter(shot.type.name == "Open Play", !off_cam, !is.na(location.x.GK))
+print(num_shots_before - nrow(shots)) # shots removed
+
+shots <- shots |>
+  select(-c(location, shot.end_location, pass.end_location, carry.end_location,
+            goalkeeper.end_location, tactics.lineup,
+            pass.end_location.x, pass.end_location.y,
+            carry.end_location.x, carry.end_location.y,
+            type.id, type.name, play_pattern.id, position.id,
+            shot.type.id, shot.outcome.id, shot.technique.id, shot.body_part.id)) |>
+  mutate(across(c(under_pressure, shot.first_time, shot.one_on_one,
+                  shot.open_goal, shot.aerial_won, shot.follows_dribble),
+                \(x) replace_na(x, FALSE)))
+
+print(nrow(shots) == n_distinct(shots$id)) # must be TRUE
+
+saveRDS(shots, here("data", "shots_final.rds"))
+```

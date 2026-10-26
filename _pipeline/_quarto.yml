@@ -1,0 +1,8 @@
+project:
+  output-dir: _output # local only, ignored by git
+
+format: html
+
+execute:
+  warning: false
+  message: false

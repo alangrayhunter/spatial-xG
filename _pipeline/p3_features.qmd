@@ -1,0 +1,355 @@
+---
+title: "p3 Features"
+---
+
+Makes the features and the four feature groups, then the five feature sets (M1 to M5).
+
+Makes:
+
+- data/shots_model.rds: one row per shot, the outcome and every feature
+- outputs/feature_sets.rds: the features in each of the five models
+- outputs/feature_groups.rds: the four feature groups
+
+Pitch is 120 x 80 yards, goal centre at (120, 40), posts at y = 36 and y = 44. "Ahead of the shooter" = at or closer to the goal line than the shot (x >= shot x). "Outfield opponents" = opposition players excluding the keeper. What each StatsBombR feature means is in Methods 4.4.
+
+```{r}
+#| include: false
+library(tidyverse)
+library(here)
+here::i_am("_pipeline/p3_features.qmd")
+
+shots <- readRDS(here("data", "shots_final.rds"))
+```
+
+# Baseline features
+
+DistToGoal comes from StatsBombR. Body part and play pattern are StatsBomb's own fields.
+
+```{r}
+features_baseline <- c("DistToGoal", "shot_angle", "shot.body_part.name", "assist_type", "play_pattern.name")
+```
+
+## Shot angle
+
+Opening angle between the posts (y = 36 and 44), in degrees.
+
+```{r}
+shots <- shots |>
+  mutate(shot_angle = atan2(8 * (120 - location.x),
+                            (120 - location.x)^2 + (location.y - 40)^2 - 16) * 180 / pi)
+
+summary(shots$shot_angle)
+```
+
+## Assist type and key pass details
+
+```{r}
+key_passes <- readRDS(here("data", "key_passes_raw.rds")) |>
+  select(id, pass.type.name, pass.cross, pass.technique.name, pass.length, pass.height.name, pass.angle) |>
+  mutate(pass.cross = replace_na(pass.cross, FALSE))
+
+shots <- shots |>
+  left_join(key_passes, by = c("shot.key_pass_id" = "id")) |>
+  mutate(assist_type = case_when(
+           is.na(shot.key_pass_id) ~ "None",
+           pass.type.name %in% c("Corner", "Free Kick", "Throw-in", "Goal Kick", "Kick Off") ~ "Set piece",
+           pass.cross ~ "Cross",
+           pass.technique.name %in% "Through Ball" ~ "Through ball",
+           TRUE ~ "Pass"),
+         # key pass details, no key pass = 0 / "None" so those shots aren't dropped
+         kp_length = replace_na(pass.length, 0),
+         kp_angle = replace_na(pass.angle, 0),
+         kp_height = replace_na(pass.height.name, "None"))
+
+shots |> group_by(assist_type) |> summarise(shots = n(), conversion = mean(goal))
+rm(key_passes)
+```
+
+# Spatial features
+
+Five come from StatsBombR (DistToKeeper, DistSGK, AngleDeviation, DefendersInCone, distance.ToD1.360). gk_in_triangle and n_within_1m are made here.
+
+```{r}
+features_spatial <- c(features_baseline,
+  "DistToKeeper", "gk_in_triangle", "DistSGK", "AngleDeviation", "DefendersInCone", "n_within_1m", "distance.ToD1.360")
+```
+
+## Counts, pressure and goal blocked from the freeze frame
+
+Also makes the Extended Spatial ones that need the freeze frame (n_within_2m, n_within_3m, pressure_gauss, goal_blocked, teammates_in_box, teammates_within_3m).
+
+```{r}
+# total length of a set of intervals on the goal line, overlaps counted once
+union_length <- function(lo, hi) {
+  keep <- hi > lo
+  lo <- lo[keep]
+  hi <- hi[keep]
+  if (length(lo) == 0) return(0)
+  o <- order(lo)
+  lo <- lo[o]
+  hi <- hi[o]
+  total <- 0
+  cur_lo <- lo[1]
+  cur_hi <- hi[1]
+  for (i in seq_along(lo)[-1]) {
+    if (lo[i] > cur_hi) {
+      total <- total + cur_hi - cur_lo
+      cur_lo <- lo[i]
+      cur_hi <- hi[i]
+    } else {
+      cur_hi <- max(cur_hi, hi[i])
+    }
+  }
+  total + cur_hi - cur_lo
+}
+
+# one row per player in each freeze frame
+ff <- shots |>
+  select(id, location.x, location.y, shot.freeze_frame) |>
+  unnest(shot.freeze_frame) |>
+  mutate(x = map_dbl(location, 1), y = map_dbl(location, 2),
+         dist = sqrt((x - location.x)^2 + (y - location.y)^2))
+
+opponents <- ff |> filter(!teammate)
+
+# counts within about 1, 2, 3 metres (1 m = 1.094 yards), and gaussian pressure
+pressure <- opponents |>
+  group_by(id) |>
+  summarise(n_within_1m = sum(dist <= 1.1),
+            n_within_2m = sum(dist <= 2.2),
+            n_within_3m = sum(dist <= 3.3),
+            pressure_gauss = sum(exp(-dist^2 / (2 * 1.5^2)))) # spread of 1.5 yards
+
+# goal blocked: each opponent ahead of the shot casts a shadow on the goal line (posts at y = 36 and 44)
+blocked <- opponents |>
+  filter(x > location.x, location.x < 120) |>
+  mutate(scale = (120 - location.x) / (x - location.x), # how much the shadow grows by the goal line
+         centre = location.y + (y - location.y) * scale,
+         half_width = 0.4 * scale, # body about 0.8 yards wide
+         lo = pmax(centre - half_width, 36),
+         hi = pmin(centre + half_width, 44)) |>
+  group_by(id) |>
+  summarise(goal_blocked = union_length(lo, hi) / 8) # share of the 8 yard goal covered
+
+# teammates: how many in the box, and how many close by
+teammates <- ff |>
+  filter(teammate) |>
+  group_by(id) |>
+  summarise(teammates_in_box = sum(x >= 102 & y >= 18 & y <= 62),
+            teammates_within_3m = sum(dist <= 3.3))
+
+shots <- shots |>
+  left_join(pressure, by = "id") |>
+  left_join(blocked, by = "id") |>
+  left_join(teammates, by = "id") |>
+  mutate(across(c(n_within_1m, n_within_2m, n_within_3m, pressure_gauss, goal_blocked,
+                  teammates_in_box, teammates_within_3m),
+                \(x) replace_na(x, 0))) # none in the frame or none ahead = 0
+
+rm(ff, opponents, pressure, blocked, teammates, union_length)
+
+count(shots, n_within_1m)
+summary(shots$goal_blocked) # 0 to 1
+```
+
+## gk_in_triangle
+
+Keeper inside the triangle from the shot to the posts. gk_along = how far the keeper is from the shot to the goal line, 0 to 1.
+
+```{r}
+shots <- shots |>
+  mutate(gk_along = (location.x.GK - location.x) / (120 - location.x),
+         gk_in_triangle = as.integer(gk_along >= 0 & gk_along <= 1 &
+           location.y.GK >= location.y + gk_along * (36 - location.y) &
+           location.y.GK <= location.y + gk_along * (44 - location.y)))
+
+shots |> group_by(gk_in_triangle) |> summarise(shots = n(), conversion = mean(goal))
+```
+
+# Extended Baseline features (no freeze frame)
+
+StatsBomb fields used as they are: shot.first_time, shot.technique.name, shot.aerial_won, shot.one_on_one, shot.open_goal, shot.follows_dribble, under_pressure, minute, period, location.x, location.y. AngleToGoal comes from StatsBombR.
+
+## Shooter position
+
+```{r}
+shots <- shots |>
+  mutate(player_position = case_when(
+           position.name == "Goalkeeper"                     ~ "def", # 7 shots, grouped with defenders
+           str_detect(position.name, "Back")                 ~ "def",
+           str_detect(position.name, "Midfield")             ~ "mid",
+           str_detect(position.name, "Forward|Striker|Wing") ~ "att",
+           TRUE ~ NA_character_),
+         player_position = factor(player_position, levels = c("def", "mid", "att")))
+
+stopifnot(!anyNA(shots$player_position))
+```
+
+## Home or away
+
+```{r}
+load(here("data", "Comp_Match_Data.RData")) # Comp and Matches
+
+shots <- shots |>
+  left_join(Matches |> select(match_id, home_team = home_team.home_team_name), by = "match_id") |>
+  mutate(is_home = as.integer(team.name == home_team))
+
+stopifnot(!anyNA(shots$is_home))
+rm(Comp, Matches)
+```
+
+## Goal difference before the shot
+
+```{r}
+all_goals <- readRDS(here("data", "shots_comp_info.rds")) |>
+  filter(shot.outcome.name == "Goal", period < 5) |> # period 5 = penalty shootout
+  select(match_id, goal_index = index, goal_team = team.name)
+
+# own goals, team.name is the team that gets the goal
+own_goals <- readRDS(here("data", "extra_events.rds"))$own_goals |>
+  select(match_id, goal_index = index, goal_team = team.name)
+
+goal_diff <- shots |>
+  select(id, match_id, index, team.name) |>
+  left_join(bind_rows(all_goals, own_goals), by = "match_id", relationship = "many-to-many") |>
+  group_by(id) |>
+  summarise(goals_for = sum(goal_index < index & goal_team == team.name, na.rm = TRUE),
+            goals_against = sum(goal_index < index & goal_team != team.name, na.rm = TRUE)) |>
+  mutate(goal_diff = goals_for - goals_against)
+
+shots <- shots |> left_join(select(goal_diff, id, goal_diff), by = "id")
+rm(all_goals, own_goals, goal_diff)
+```
+
+## Time on pitch
+
+```{r}
+subs <- readRDS(here("data", "extra_events.rds"))$subs |>
+  filter(!is.na(player.id)) |>
+  distinct(match_id, player.id, .keep_all = TRUE)
+
+shots <- shots |>
+  left_join(subs, by = c("match_id", "player.id")) |>
+  mutate(time_on_pitch = minute - replace_na(sub_minute, 0)) |> # starters came on at 0
+  select(-sub_minute)
+
+rm(subs)
+```
+
+## Weak foot
+
+```{r}
+foot <- readRDS(here("data", "extra_events.rds"))$footedness |>
+  select(player.id, DominantFoot)
+
+shots <- shots |>
+  left_join(foot, by = "player.id") |>
+  mutate(weak_foot = as.integer(shot.body_part.name %in% c("Left Foot", "Right Foot") &
+                                  !is.na(DominantFoot) &
+                                  shot.body_part.name != DominantFoot)) |>
+  select(-DominantFoot)
+
+rm(foot)
+```
+
+## Possession time
+
+Seconds from the start of the possession to the shot.
+
+```{r}
+poss_start <- readRDS(here("data", "extra_events.rds"))$poss_start
+
+shots <- shots |>
+  left_join(poss_start, by = c("match_id", "possession")) |>
+  mutate(poss_time = (minute * 60 + second) - poss_start) |>
+  select(-poss_start)
+
+rm(poss_start)
+```
+
+## Rebound
+
+1 if the same team had another shot in the previous 3 seconds (any shot type).
+
+```{r}
+earlier_shots <- readRDS(here("data", "shots_comp_info.rds")) |>
+  filter(period < 5) |>
+  transmute(match_id, team.name, period, prev_index = index, prev_t = minute * 60 + second)
+
+rebounds <- shots |>
+  transmute(id, match_id, team.name, period, index, t = minute * 60 + second) |>
+  inner_join(earlier_shots, by = c("match_id", "team.name", "period"), relationship = "many-to-many") |>
+  filter(prev_index < index, t - prev_t <= 3) |>
+  distinct(id)
+
+shots <- shots |> mutate(is_rebound = as.integer(id %in% rebounds$id))
+rm(earlier_shots, rebounds)
+```
+
+# Extended Spatial features
+
+From StatsBombR: density, density.incone, InCone.GK, distance.ToD1, distance.ToD2, distance.ToD2.360, AttackersBehindBall, DefendersBehindBall, DefArea, AngleToKeeper, location.x.GK, location.y.GK. The freeze-frame counts, pressure_gauss and goal_blocked were made above.
+
+```{r}
+shots <- shots |>
+  mutate(d1_magnitude = abs(distance.ToD1), # how far the nearest defender is, in front or behind
+         d1_goalside = as.integer(distance.ToD1 > 0 & distance.ToD1 != 30)) # nearest defender ahead of the shooter
+```
+
+# Feature groups and feature sets
+
+```{r}
+extended_baseline <- c("shot.first_time", "shot.technique.name", "shot.aerial_won",
+                       "shot.one_on_one", "shot.open_goal", "under_pressure",
+                       "minute", "location.x", "location.y",
+                       "player_position", "is_home", "goal_diff", "time_on_pitch", "weak_foot",
+                       "shot.follows_dribble", "AngleToGoal", "period",
+                       "poss_time", "kp_length", "kp_height", "kp_angle", "is_rebound")
+
+extended_spatial <- c("density", "density.incone", "InCone.GK", "distance.ToD1",
+                      "distance.ToD2.360", "AttackersBehindBall",
+                      "DefendersBehindBall", "DefArea",
+                      "d1_magnitude", "d1_goalside",
+                      "AngleToKeeper", "location.x.GK", "location.y.GK", "distance.ToD2",
+                      "n_within_2m", "n_within_3m", "pressure_gauss", "goal_blocked",
+                      "teammates_in_box", "teammates_within_3m")
+
+# the four groups, no overlap (names kept so the saved files still work)
+standard <- features_baseline                           # Baseline
+ff_core <- setdiff(features_spatial, features_baseline) # Spatial
+context <- extended_baseline                            # Extended Baseline
+ff_extra <- extended_spatial                            # Extended Spatial
+
+feature_sets <- list(
+  std = standard,                              # M1 Baseline
+  std_ff = c(standard, ff_core),               # M2 Spatial
+  std_ctx = c(standard, context),              # M3 Extended Baseline
+  std_ctx_ff = c(standard, ff_core, context),  # M4 Extended Baseline + Spatial
+  full = c(standard, ff_core, context, ff_extra)) # M5 Extended Spatial
+
+lengths(feature_sets) # 5, 12, 27, 34, 54
+```
+
+# Saving the model data
+
+```{r}
+shots_model <- shots |>
+  mutate(goal = as.integer(goal),
+         shot.body_part.name = factor(shot.body_part.name),
+         play_pattern.name = factor(play_pattern.name),
+         assist_type = factor(assist_type),
+         shot.technique.name = factor(shot.technique.name),
+         kp_height = factor(kp_height),
+         across(where(is.logical), as.integer)) |> # TRUE/FALSE to 1/0 so xgboost column names stay clean
+  select(id, match_id, goal, shot.statsbomb_xg, all_of(feature_sets$full))
+
+# drop shots missing any feature, so every model uses exactly the same shots
+num_shots_before <- nrow(shots_model)
+shots_model <- shots_model |> drop_na(all_of(feature_sets$full))
+print(num_shots_before - nrow(shots_model)) # shots dropped
+
+saveRDS(shots_model, here("data", "shots_model.rds"))
+saveRDS(feature_sets, here("outputs", "feature_sets.rds"))
+saveRDS(list(standard = standard, context = context, ff_core = ff_core, ff_extra = ff_extra),
+        here("outputs", "feature_groups.rds"))
+```

@@ -22,3 +22,7 @@ data/
 
 # signed plagiarism declaration (signatures, student numbers): kept local, the title page skips it if missing
 images/plagiarism-declaration.pdf
+
+nul
+*.log
+index.tex

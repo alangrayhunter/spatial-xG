@@ -52,7 +52,7 @@ A model with good xG probabilities can be used practically to analyse player per
 ```{r}
 #| label: fig-xg-players
 #| fig-cap: "Goals scored against StatsBomb xG for players with 20 or more shots, Premier League 2015/16. Above the dashed line = more goals than their chances suggested. The three biggest over- and under-performers are labelled with randomly assigned IDs"
-#| fig-scap: "Goals scored against StatsBomb xG for players with 20 or more shots, Premier League 2015/16"
+#| fig-scap: "Goals scored against StatsBomb xG per player, Premier League 2015/16"
 #| fig-height: 5
 season_players <- out("xg_season_players")
 ggplot(season_players, aes(xg, goals, colour = role)) +
@@ -71,7 +71,7 @@ ggplot(season_players, aes(xg, goals, colour = role)) +
 ```{r}
 #| label: fig-xg-season-points
 #| fig-cap: "Actual points against expected points from StatsBomb xG, Premier League 2015/16. Above the dashed line = more points than their chances suggested"
-#| fig-scap: "Actual points against expected points from StatsBomb xG, Premier League 2015/16"
+#| fig-scap: "Actual against expected points, Premier League 2015/16"
 #| fig-height: 5.5
 ggplot(out("xg_season_table"), aes(xpts, pts)) +
   geom_abline(linetype = "dashed", colour = "grey60") +

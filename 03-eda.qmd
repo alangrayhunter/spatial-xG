@@ -290,7 +290,7 @@ Our target variable is the outcome of the shot: whether it resulted in a goal (1
 ```{r}
 #| label: fig-class-balance
 #| fig-cap: "Number of shots and goals in the full sample and in the training and test sets (split by match)."
-#| fig-scap: "Number of shots and goals in the full sample and in the training and test sets (split by match)"
+#| fig-scap: "Shots and goals in the full sample and in the training and test sets"
 split_counts <- shots_model |>
   select(match_id, goal) |>
   left_join(out("match_split"), by = "match_id") |>
@@ -405,7 +405,7 @@ The StatsBomb data includes freeze frames at the time of every shot event (excep
 ```{r}
 #| label: fig-freeze-frame
 #| fig-cap: "Freeze frame for one shot in the data (a header from a corner, 7.1 yards from goal, which was blocked). Left: what the baseline features know about the shot. Right: every player position recorded in the freeze frame. The shaded triangle joins the shot location to the two goalposts."
-#| fig-scap: "Freeze frame for one shot in the data (a header from a corner, 7.1 yards from goal, which was blocked)"
+#| fig-scap: "Freeze frame for one example shot"
 #| fig-height: 4
 example <- shots |>
   filter(DefendersInCone == 2, DistToGoal < 15, location.y > 30, location.y < 50) |>

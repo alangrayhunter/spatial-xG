@@ -21,7 +21,14 @@ if (!has_quarto) stop("Install Quarto from https://quarto.org, restart RStudio, 
 
 # 4. LaTeX, for the PDF
 if (!tinytex::is_tinytex()) tinytex::install_tinytex()
-tinytex::tlmgr_install(c("caption", "pdfpages", "float"))
+tinytex::tlmgr_install(c("amsfonts", "amsmath", "atbegshi", "atveryend", "auxhook", "bigintcalc", "bitset",
+                         "bookmark", "booktabs", "caption", "colortbl", "environ", "eso-pic", "etoolbox", "float", "fontspec",
+                         "footmisc", "footnotehyper", "geometry", "gettitlestring", "graphics", "graphics-cfg", "graphics-def",
+                         "hycolor", "hyperref", "iftex", "infwarerr", "intcalc", "koma-script", "kvdefinekeys", "kvoptions",
+                         "kvsetkeys", "l3kernel", "l3packages", "ltablex", "ltxcmds", "makecell", "microtype",
+                         "multirow", "pdfescape", "pdflscape", "pdfpages", "pdftexcmds", "refcount", "rerunfilecheck",
+                         "stringenc", "tabu", "threeparttable", "threeparttablex", "tools", "trimspaces", "ulem", "unicode-math",
+                         "uniquecounter", "upquote", "url", "varwidth", "wrapfig", "xcolor", "xltabular", "xurl"))
 
 # 5. Print versions, so we can compare computers
 R.version.string
