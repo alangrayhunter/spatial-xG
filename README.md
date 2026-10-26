@@ -9,7 +9,8 @@ in this repository; the pipeline downloads it.
 ## Set up a new computer
 
 1. Install R, RStudio and Quarto.
-2. Open `Honours-Project-xG.Rproj` and run `source("setup.R")` once (installs the packages and LaTeX).
+2. Clone this repository (GitHub Desktop: File > Clone repository > URL).
+3. Open `spatial-xG.Rproj` and run `source("setup.R")` once (installs the packages and LaTeX).
 
 ## Render the dissertation (PDF)
 
@@ -17,11 +18,12 @@ In the RStudio Terminal, from the project folder:
 
     quarto render --to pdf
 
-The PDF is `_book/xG-dissertation.pdf`.
+The PDF is `_book/MHRREJ002_HNTALA001_Honours_FinalHandIn_2026.pdf`.
 
 The book only loads results. The first chunk of `index.qmd` checks the pipeline outputs: if any are missing,
 it runs that pipeline file and every one after it (p1 to p5), then carries on. If everything exists, nothing
-in the pipeline runs.
+in the pipeline runs. A fresh clone has no `data/`, so the first render runs the whole pipeline
+(several hours). To rebuild every result from scratch, also delete `outputs/` before rendering.
 
 ## The pipeline (`_pipeline/`)
 
