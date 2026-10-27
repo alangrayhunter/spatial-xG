@@ -47,7 +47,7 @@ shots_all |>
 ```{r}
 #| label: fig-competition-seasons
 #| fig-cap: "Number of matches per competition and season, men's competitions"
-#| fig-height: 4.6
+#| fig-height: 4
 shots_all |>
   mutate(season = as.integer(str_sub(season_name, 1, 4))) |>
   group_by(competition_name, season) |>
@@ -99,6 +99,7 @@ The vast majority of shots come from open play, over 93% of them. @fig-shot-type
 ```{r}
 #| label: fig-shot-types-all
 #| fig-cap: "Shots by shot type, men's competitions including penalties"
+#| fig-height: 3
 shots_all |>
   count(shot.type.name) |>
   ggplot(aes(x = n, y = reorder(shot.type.name, n))) +
@@ -322,6 +323,7 @@ ggplot(split_counts, aes(set, n, fill = outcome)) +
 ```{r}
 #| label: fig-shot-types
 #| fig-cap: "Distribution of shot types across the full shot sample, including penalties"
+#| fig-height: 3
 shots_all |>
   count(shot.type.name) |>
   ggplot(aes(x = n, y = reorder(shot.type.name, n))) +
@@ -335,6 +337,7 @@ Removing penalties from this picture, as shown in @fig-shot-types-no-pen, barely
 ```{r}
 #| label: fig-shot-types-no-pen
 #| fig-cap: "Distribution of shot types with penalties excluded"
+#| fig-height: 3
 shots_cleaned |>
   count(shot.type.name) |>
   ggplot(aes(x = n, y = reorder(shot.type.name, n))) +
@@ -350,6 +353,7 @@ shots_cleaned |>
 ```{r}
 #| label: fig-body-part
 #| fig-cap: "Distribution of body part used for shots, with penalties excluded"
+#| fig-height: 3
 shots_cleaned |>
   count(shot.body_part.name) |>
   ggplot(aes(x = n, y = reorder(shot.body_part.name, n))) +

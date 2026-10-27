@@ -57,7 +57,7 @@ out("metrics") |>
 ```{r}
 #| label: fig-performance
 #| fig-cap: "Test set AUROC, PR-AUC and Brier score"
-#| fig-height: 5.5
+#| fig-height: 4.2
 tm |>
   select(name, m, type, auc, pr_auc, brier) |>
   pivot_longer(c(auc, pr_auc, brier), names_to = "metric") |>
@@ -78,6 +78,7 @@ tm |>
 #| label: fig-bss
 #| fig-cap: "Brier skill score on the test set: how much lower each model's Brier score is than giving every shot the training goal rate (higher is better)"
 #| fig-scap: "Brier skill score on the test set"
+#| fig-height: 3.8
 tm |>
   ggplot(aes(x = bss, y = name, fill = m == "StatsBomb")) +
   geom_col(width = 0.7) +
@@ -216,7 +217,7 @@ out("class_metrics") |>
 #| label: fig-recall-spec-goal
 #| fig-cap: "Recall against specificity, cut-off = training goal rate (0.103). Dashed lines join points with equal balanced accuracy, and top right is better"
 #| fig-scap: "Recall against specificity, cut-off = training goal rate (0.103)"
-#| fig-height: 5
+#| fig-height: 4
 cm <- out("class_metrics") |>
   mutate(m = if_else(model == "statsbomb", "StatsBomb", tier_short[tier]),
          name = short_name(model, tier),
@@ -246,7 +247,7 @@ class_scatter("goal", "specificity", "recall", "Specificity", "Recall", ba_lines
 #| label: fig-recall-spec-half
 #| fig-cap: "Recall against specificity, cut-off = 0.5. Dashed lines join points with equal balanced accuracy, and top right is better"
 #| fig-scap: "Recall against specificity, cut-off = 0.5"
-#| fig-height: 5
+#| fig-height: 4
 class_scatter("0.5", "specificity", "recall", "Specificity", "Recall", ba_lines = TRUE)
 ```
 
@@ -254,7 +255,7 @@ class_scatter("0.5", "specificity", "recall", "Specificity", "Recall", ba_lines 
 #| label: fig-f1-ba-goal
 #| fig-cap: "F1 against balanced accuracy, cut-off = training goal rate (0.103). Top right is better"
 #| fig-scap: "F1 against balanced accuracy, cut-off = training goal rate (0.103)"
-#| fig-height: 5
+#| fig-height: 4
 class_scatter("goal", "balanced_accuracy", "f1", "Balanced accuracy", "F1")
 ```
 
@@ -262,7 +263,7 @@ class_scatter("goal", "balanced_accuracy", "f1", "Balanced accuracy", "F1")
 #| label: fig-f1-ba-half
 #| fig-cap: "F1 against balanced accuracy, cut-off = 0.5. Top right is better"
 #| fig-scap: "F1 against balanced accuracy, cut-off = 0.5"
-#| fig-height: 5
+#| fig-height: 4
 class_scatter("0.5", "balanced_accuracy", "f1", "Balanced accuracy", "F1")
 ```
 
@@ -447,7 +448,7 @@ gain_vs_shap |>
 #| label: fig-importance-shares
 #| fig-cap: "Share of total importance under SHAP, permutation and gain for the 19 features in the top 15 under at least one measure, M5 Extended Spatial XGBoost model, ordered by SHAP importance (negative permutation values set to 0)."
 #| fig-scap: "Share of total importance under SHAP"
-#| fig-height: 6
+#| fig-height: 5
 shares <- gain_vs_shap |>
   filter(tier == "full") |>
   mutate(SHAP = mean_abs_shap / sum(mean_abs_shap),
@@ -493,7 +494,7 @@ coef_m2 |>
   transmute(Group = blank_repeats(Group), Feature = blank_repeats(Feature), Category,
             Coefficient = estimate, SE = std.error, `Odds ratio` = odds_ratio,
             `95% CI low` = ci_low, `95% CI high` = ci_high, `p-value` = fmt_p(p.value)) |>
-  kable_tbl(note = "Odds ratio = multiplicative change in the odds of a goal for a one-unit increase, or for that category against the reference category (body part: Head; assist type: Cross; play pattern: From Corner).", digits = 3, group = "Group", lines_by = "Feature")
+  kable_tbl(note = "Odds ratio = multiplicative change in the odds of a goal for a one-unit increase, or for that category against the reference category (body part: Head; assist type: Cross; play pattern: From Corner).", digits = 3, group = "Group", lines_by = "Feature", longtable = FALSE)
 ```
 
 @tbl-logit-m2 above shows which features are significant in the Logistic Regression model. Of the significant spatial features, the odds ratio of `DistToKeeper` is significant at 1.083, `gk_in_triangle` at 0.671, `DefendersInCone` shows each additional defender lowers the odds of scoring by 0.74, `n_within_1m` at 0.719, and `distance.ToD1.360` at 1.075. `DistSGK` and `AngleDeviation` are not significant, and have odds ratios almost equal to 1. This is in direct contrast to XGB which says `DistSGK` is one of the most important features.
@@ -678,7 +679,7 @@ As shown in @tbl-metrics-test above, M2 XGB outperforms M1 XGB across all probab
 ```{r}
 #| label: fig-improve-m1-m2
 #| fig-cap: "Improvement in each test set metric from M1 XGB to M2 XGB"
-#| fig-height: 5.5
+#| fig-height: 3.6
 improvement_plot(metric_improvement("std", "std_ff"), "Improvement from M1 XGB to M2 XGB (%)")
 ```
 
@@ -689,7 +690,7 @@ improvement_plot(metric_improvement("std", "std_ff"), "Improvement from M1 XGB t
 ```{r}
 #| label: fig-improve-m3-m4
 #| fig-cap: "Improvement in each test set metric from M3 XGB to M4 XGB"
-#| fig-height: 5.5
+#| fig-height: 3.6
 improvement_plot(metric_improvement("std_ctx", "std_ctx_ff"), "Improvement from M3 XGB to M4 XGB (%)")
 ```
 
@@ -708,7 +709,7 @@ Next, we look at the improvement in model performance due to the inclusion of ex
 ```{r}
 #| label: fig-improve-m4-m5
 #| fig-cap: "Improvement in each test set metric from M4 XGB to M5 XGB"
-#| fig-height: 5.5
+#| fig-height: 3.6
 improvement_plot(metric_improvement("std_ctx_ff", "full"), "Improvement from M4 XGB to M5 XGB (%)")
 ```
 
