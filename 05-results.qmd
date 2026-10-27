@@ -509,6 +509,7 @@ The SHAP dependence plot below shows the continuous features, and does not show 
 
 ```{r}
 #| label: fig-dep-m2
+#| dev: "png"
 #| fig-cap: "SHAP value against feature value, continuous core freeze-frame features, M2 XGBoost (top 1% of values removed), each point is one test shot, the line is a smoothed average."
 #| fig-scap: "SHAP value against feature value, continuous core freeze-frame features"
 #| fig-height: 6
@@ -552,6 +553,7 @@ Next, we look at the extended features with highest SHAP importance from M5. @fi
 
 ```{r}
 #| label: fig-dep-m5
+#| dev: "png"
 #| fig-cap: "SHAP value against feature value for the six Extended Baseline and Extended Spatial features with the largest SHAP importance among features with at least 10 distinct values, M5 Extended Spatial XGBoost model (top 1% of values removed). Each point is one test shot; the line is a smoothed average."
 #| fig-scap: "SHAP value against feature value, top continuous Extended features, M5"
 #| fig-height: 7
@@ -603,6 +605,7 @@ bind_rows(
 
 ```{r}
 #| label: fig-sb-m2
+#| dev: "png"
 #| fig-cap: "xG from the M2 Spatial XGBoost model against xG from the StatsBomb model for each test shot, coloured by outcome. The dashed line marks equal predictions."
 #| fig-scap: "M2 Spatial XGBoost xG against StatsBomb xG, test shots"
 #| fig-height: 5.5
@@ -627,6 +630,7 @@ ggplot(w, aes(statsbomb, ours, colour = factor(goal, labels = c("No goal", "Goal
 
 ```{r}
 #| label: fig-sb-m5
+#| dev: "png"
 #| fig-cap: "xG from the M5 Extended Spatial XGBoost model against xG from StatsBomb for each test shot, coloured by outcome, square-root scale on both axes. The dashed line marks equal predictions."
 #| fig-scap: "M5 Extended Spatial XGBoost xG against StatsBomb xG, test shots"
 #| fig-height: 5.5
